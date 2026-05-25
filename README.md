@@ -40,17 +40,47 @@ end
 
 ## Modules
 
+### Core
+
 | Module | Purpose |
 |--------|---------|
 | `Oracle.Aggregator` | Price aggregation (median, mean, VWAP) |
 | `Oracle.Derived` | Composite price calculation (BTC/XAU, etc.) |
 | `Oracle.Indicators` | Technical indicators (SMA, EMA, MACD, Bollinger) |
 | `Oracle.Candles` | OHLC candle building from ticks |
+| `Oracle.Book` | Pure order book management functions |
+| `Oracle.Connection` | Stateless WebSocket connection utilities (backoff, health) |
+| `Oracle.Feeds` | Feed data structs for streaming (Ticker, Trade, Book, Liquidation, FundingRate) |
+
+### Behaviours
+
+| Module | Purpose |
+|--------|---------|
+| `Oracle.Sources.Source` | REST exchange adapter contract |
+| `Oracle.Sources.StreamSource` | WebSocket streaming adapter contract |
+
+### REST Adapters
+
+| Module | Purpose |
+|--------|---------|
 | `Oracle.Sources.Binance` | Binance API adapter |
 | `Oracle.Sources.Coinbase` | Coinbase API adapter |
 | `Oracle.Sources.Kraken` | Kraken API adapter |
 | `Oracle.Sources.Bitstamp` | Bitstamp API adapter |
 | `Oracle.Sources.Gemini` | Gemini API adapter |
+| `Oracle.Sources.KuCoin` | KuCoin API adapter |
+| `Oracle.Sources.Yahoo` | Yahoo Finance adapter (commodities, indices, forex) |
+
+### Stream Adapters
+
+| Module | Purpose |
+|--------|---------|
+| `Oracle.Sources.BinanceStream` | Binance WebSocket adapter |
+| `Oracle.Sources.CoinbaseStream` | Coinbase WebSocket adapter |
+| `Oracle.Sources.KrakenStream` | Kraken WebSocket adapter |
+| `Oracle.Sources.BybitStream` | Bybit WebSocket adapter |
+| `Oracle.Sources.DeribitStream` | Deribit WebSocket adapter |
+| `Oracle.Sources.OkxStream` | OKX WebSocket adapter |
 
 ## Usage
 
@@ -253,9 +283,9 @@ mix credo --strict
 ```elixir
 defp deps do
   [
-    {:decimal, "~> 2.0"},
-    {:jason, "~> 1.4"},
-    {:httpoison, "~> 2.0"}
+    {:core, path: "../core"},
+    {:decimal, "~> 2.1"},
+    {:jason, "~> 1.4"}
   ]
 end
 ```
