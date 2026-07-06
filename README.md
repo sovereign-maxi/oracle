@@ -284,7 +284,7 @@ mix credo --strict
 defp deps do
   [
     {:core, path: "../core"},
-    {:decimal, "~> 2.1"},
+    {:decimal, "~> 3.0"},
     {:jason, "~> 1.4"}
   ]
 end
