@@ -1,4 +1,4 @@
-defmodule Oracle.Sources.KrakenStream do
+defmodule Oracle.Sources.Streams.Kraken do
   @moduledoc """
   Kraken WebSocket streaming adapter.
 
@@ -15,7 +15,7 @@ defmodule Oracle.Sources.KrakenStream do
   - `:book` - Order book snapshots and deltas
   """
 
-  @behaviour Oracle.Sources.StreamSource
+  @behaviour Oracle.Sources.Streams
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, Ticker, Trade}
 

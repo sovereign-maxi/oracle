@@ -1,18 +1,18 @@
-defmodule Oracle.Sources.CoinbaseStreamTest do
+defmodule Oracle.Sources.Streams.CoinbaseTest do
   use ExUnit.Case, async: true
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, Ticker, Trade}
-  alias Oracle.Sources.CoinbaseStream
+  alias Oracle.Sources.Streams.Coinbase
 
   describe "name/0" do
     test "returns :coinbase" do
-      assert CoinbaseStream.name() == :coinbase
+      assert Coinbase.name() == :coinbase
     end
   end
 
   describe "ws_url/1" do
     test "returns single endpoint" do
-      url = CoinbaseStream.ws_url([%{feed: :ticker, pair: :btc_usd}])
+      url = Coinbase.ws_url([%{feed: :ticker, pair: :btc_usd}])
       assert url == "wss://ws-feed.exchange.coinbase.com"
     end
   end
@@ -20,7 +20,7 @@ defmodule Oracle.Sources.CoinbaseStreamTest do
   describe "subscribe_messages/1" do
     test "returns subscribe message with product_ids" do
       channels = [%{feed: :ticker, pair: :btc_usd}]
-      [msg] = CoinbaseStream.subscribe_messages(channels)
+      [msg] = Coinbase.subscribe_messages(channels)
       assert msg["type"] == "subscribe"
       assert "BTC-USD" in msg["product_ids"]
       assert "ticker" in msg["channels"]
@@ -30,7 +30,7 @@ defmodule Oracle.Sources.CoinbaseStreamTest do
   describe "unsubscribe_messages/1" do
     test "returns unsubscribe message" do
       channels = [%{feed: :trades, pair: :eth_usd}]
-      [msg] = CoinbaseStream.unsubscribe_messages(channels)
+      [msg] = Coinbase.unsubscribe_messages(channels)
       assert msg["type"] == "unsubscribe"
     end
   end
@@ -49,7 +49,7 @@ defmodule Oracle.Sources.CoinbaseStreamTest do
         "time" => "2024-01-01T12:00:00.000000Z"
       }
 
-      assert {:ok, [%Ticker{} = ticker]} = CoinbaseStream.parse_message(msg)
+      assert {:ok, [%Ticker{} = ticker]} = Coinbase.parse_message(msg)
       assert ticker.source == :coinbase
       assert ticker.pair == :btc_usd
     end
@@ -65,7 +65,7 @@ defmodule Oracle.Sources.CoinbaseStreamTest do
         "time" => "2024-01-01T12:00:00.000000Z"
       }
 
-      assert {:ok, [%Trade{} = trade]} = CoinbaseStream.parse_message(msg)
+      assert {:ok, [%Trade{} = trade]} = Coinbase.parse_message(msg)
       assert trade.source == :coinbase
       assert trade.side == :buy
     end
@@ -78,7 +78,7 @@ defmodule Oracle.Sources.CoinbaseStreamTest do
         "asks" => [["104525.00", "1.8"]]
       }
 
-      assert {:ok, [%BookSnapshot{} = snapshot]} = CoinbaseStream.parse_message(msg)
+      assert {:ok, [%BookSnapshot{} = snapshot]} = Coinbase.parse_message(msg)
       assert snapshot.source == :coinbase
       assert length(snapshot.bids) == 2
       assert length(snapshot.asks) == 1
@@ -95,24 +95,24 @@ defmodule Oracle.Sources.CoinbaseStreamTest do
         "time" => "2024-01-01T12:00:00.000000Z"
       }
 
-      assert {:ok, [%BookDelta{} = delta]} = CoinbaseStream.parse_message(msg)
+      assert {:ok, [%BookDelta{} = delta]} = Coinbase.parse_message(msg)
       assert delta.source == :coinbase
       assert length(delta.bids) == 1
       assert length(delta.asks) == 1
     end
 
     test "ignores heartbeat" do
-      assert :ignore = CoinbaseStream.parse_message(%{"type" => "heartbeat"})
+      assert :ignore = Coinbase.parse_message(%{"type" => "heartbeat"})
     end
 
     test "ignores subscriptions" do
-      assert :ignore = CoinbaseStream.parse_message(%{"type" => "subscriptions"})
+      assert :ignore = Coinbase.parse_message(%{"type" => "subscriptions"})
     end
   end
 
   describe "supported_feeds/0" do
     test "returns expected feeds" do
-      feeds = CoinbaseStream.supported_feeds()
+      feeds = Coinbase.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
       assert :book in feeds

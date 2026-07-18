@@ -1,12 +1,12 @@
-defmodule Oracle.Sources.BinanceStreamTest do
+defmodule Oracle.Sources.Streams.BinanceTest do
   use ExUnit.Case, async: true
 
   alias Oracle.Feeds.{BookDelta, Liquidation, Ticker, Trade}
-  alias Oracle.Sources.BinanceStream
+  alias Oracle.Sources.Streams.Binance
 
   describe "name/0" do
     test "returns :binance" do
-      assert BinanceStream.name() == :binance
+      assert Binance.name() == :binance
     end
   end
 
@@ -17,7 +17,7 @@ defmodule Oracle.Sources.BinanceStreamTest do
         %{feed: :trades, pair: :btcusdt}
       ]
 
-      url = BinanceStream.ws_url(channels)
+      url = Binance.ws_url(channels)
       assert String.contains?(url, "wss://stream.binance.com:9443/stream?streams=")
       assert String.contains?(url, "miniTicker")
       assert String.contains?(url, "trade")
@@ -26,7 +26,7 @@ defmodule Oracle.Sources.BinanceStreamTest do
 
   describe "subscribe_messages/1" do
     test "returns empty list (subscriptions are in URL)" do
-      assert BinanceStream.subscribe_messages([]) == []
+      assert Binance.subscribe_messages([]) == []
     end
   end
 
@@ -45,7 +45,7 @@ defmodule Oracle.Sources.BinanceStreamTest do
         }
       }
 
-      assert {:ok, [%Ticker{} = ticker]} = BinanceStream.parse_message(msg)
+      assert {:ok, [%Ticker{} = ticker]} = Binance.parse_message(msg)
       assert ticker.source == :binance
       assert Decimal.equal?(ticker.price, Decimal.new("104523.45"))
     end
@@ -65,7 +65,7 @@ defmodule Oracle.Sources.BinanceStreamTest do
         }
       }
 
-      assert {:ok, [%Trade{} = trade]} = BinanceStream.parse_message(msg)
+      assert {:ok, [%Trade{} = trade]} = Binance.parse_message(msg)
       assert trade.source == :binance
       assert trade.side == :buy
       assert trade.trade_id == "123456"
@@ -85,7 +85,7 @@ defmodule Oracle.Sources.BinanceStreamTest do
         }
       }
 
-      assert {:ok, [%BookDelta{} = delta]} = BinanceStream.parse_message(msg)
+      assert {:ok, [%BookDelta{} = delta]} = Binance.parse_message(msg)
       assert delta.source == :binance
       assert delta.first_sequence == 100
       assert delta.last_sequence == 105
@@ -107,33 +107,33 @@ defmodule Oracle.Sources.BinanceStreamTest do
         }
       }
 
-      assert {:ok, [%Liquidation{} = liq]} = BinanceStream.parse_message(msg)
+      assert {:ok, [%Liquidation{} = liq]} = Binance.parse_message(msg)
       assert liq.source == :binance
       assert liq.side == :sell
     end
 
     test "ignores subscription confirmations" do
-      assert :ignore = BinanceStream.parse_message(%{"result" => nil})
+      assert :ignore = Binance.parse_message(%{"result" => nil})
     end
 
     test "handles ping messages" do
-      assert :ping = BinanceStream.parse_message(%{"ping" => 1})
+      assert :ping = Binance.parse_message(%{"ping" => 1})
     end
 
     test "ignores unknown messages" do
-      assert :ignore = BinanceStream.parse_message(%{"unknown" => "data"})
+      assert :ignore = Binance.parse_message(%{"unknown" => "data"})
     end
   end
 
   describe "ping_config/0" do
     test "returns nil (Binance uses WebSocket-level pings)" do
-      assert BinanceStream.ping_config() == nil
+      assert Binance.ping_config() == nil
     end
   end
 
   describe "supported_feeds/0" do
     test "returns expected feeds" do
-      feeds = BinanceStream.supported_feeds()
+      feeds = Binance.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
       assert :book in feeds

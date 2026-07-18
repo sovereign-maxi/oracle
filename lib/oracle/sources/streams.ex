@@ -1,14 +1,14 @@
-defmodule Oracle.Sources.StreamSource do
+defmodule Oracle.Sources.Streams do
   @moduledoc """
   Behaviour for WebSocket streaming data sources.
 
   Exchange adapters implement this behaviour to provide a consistent
   interface for real-time market data via WebSocket connections.
 
-  ## Implementing a StreamSource
+  ## Implementing a stream adapter
 
-      defmodule MyApp.Sources.BinanceStream do
-        @behaviour Oracle.Sources.StreamSource
+      defmodule MyApp.Sources.Stream.Binance do
+        @behaviour Oracle.Sources.Streams
 
         @impl true
         def name, do: :binance

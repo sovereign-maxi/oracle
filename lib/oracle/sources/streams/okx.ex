@@ -1,4 +1,4 @@
-defmodule Oracle.Sources.OkxStream do
+defmodule Oracle.Sources.Streams.Okx do
   @moduledoc """
   OKX WebSocket streaming adapter.
 
@@ -17,7 +17,7 @@ defmodule Oracle.Sources.OkxStream do
   - `:funding_rate` - Perpetual futures funding rates
   """
 
-  @behaviour Oracle.Sources.StreamSource
+  @behaviour Oracle.Sources.Streams
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Liquidation, Ticker, Trade}
 

@@ -1,18 +1,18 @@
-defmodule Oracle.Sources.DeribitStreamTest do
+defmodule Oracle.Sources.Streams.DeribitTest do
   use ExUnit.Case, async: true
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, Liquidation, Ticker, Trade}
-  alias Oracle.Sources.DeribitStream
+  alias Oracle.Sources.Streams.Deribit
 
   describe "name/0" do
     test "returns :deribit" do
-      assert DeribitStream.name() == :deribit
+      assert Deribit.name() == :deribit
     end
   end
 
   describe "ws_url/1" do
     test "returns single endpoint" do
-      url = DeribitStream.ws_url([])
+      url = Deribit.ws_url([])
       assert url == "wss://www.deribit.com/ws/api/v2"
     end
   end
@@ -20,7 +20,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
   describe "subscribe_messages/1" do
     test "returns JSON-RPC subscribe message" do
       channels = [%{feed: :ticker, pair: :btc_usd}]
-      [msg] = DeribitStream.subscribe_messages(channels)
+      [msg] = Deribit.subscribe_messages(channels)
       assert msg["jsonrpc"] == "2.0"
       assert msg["method"] == "public/subscribe"
       assert is_list(msg["params"]["channels"])
@@ -30,7 +30,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
   describe "unsubscribe_messages/1" do
     test "returns JSON-RPC unsubscribe message" do
       channels = [%{feed: :trades, pair: :btc_usd}]
-      [msg] = DeribitStream.unsubscribe_messages(channels)
+      [msg] = Deribit.unsubscribe_messages(channels)
       assert msg["method"] == "public/unsubscribe"
     end
   end
@@ -57,7 +57,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
         }
       }
 
-      assert {:ok, result} = DeribitStream.parse_message(msg)
+      assert {:ok, result} = Deribit.parse_message(msg)
       ticker = Enum.find(result, &match?(%Ticker{}, &1))
       assert ticker.source == :deribit
     end
@@ -80,7 +80,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
         }
       }
 
-      assert {:ok, [%Trade{} = trade]} = DeribitStream.parse_message(msg)
+      assert {:ok, [%Trade{} = trade]} = Deribit.parse_message(msg)
       assert trade.source == :deribit
       assert trade.side == :buy
     end
@@ -101,7 +101,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
         }
       }
 
-      assert {:ok, [%BookSnapshot{} = snapshot]} = DeribitStream.parse_message(msg)
+      assert {:ok, [%BookSnapshot{} = snapshot]} = Deribit.parse_message(msg)
       assert snapshot.source == :deribit
       assert snapshot.sequence == 100
     end
@@ -122,7 +122,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
         }
       }
 
-      assert {:ok, [%BookDelta{} = delta]} = DeribitStream.parse_message(msg)
+      assert {:ok, [%BookDelta{} = delta]} = Deribit.parse_message(msg)
       assert delta.source == :deribit
       assert delta.first_sequence == 100
       assert delta.last_sequence == 101
@@ -145,29 +145,29 @@ defmodule Oracle.Sources.DeribitStreamTest do
         }
       }
 
-      assert {:ok, [%Liquidation{} = liq]} = DeribitStream.parse_message(msg)
+      assert {:ok, [%Liquidation{} = liq]} = Deribit.parse_message(msg)
       assert liq.source == :deribit
       assert liq.side == :sell
     end
 
     test "ignores RPC results" do
-      assert :ignore = DeribitStream.parse_message(%{"id" => 1, "result" => ["channel1"]})
+      assert :ignore = Deribit.parse_message(%{"id" => 1, "result" => ["channel1"]})
     end
 
     test "handles heartbeat test_request as ping" do
       msg = %{"method" => "heartbeat", "params" => %{"type" => "test_request"}}
-      assert :ping = DeribitStream.parse_message(msg)
+      assert :ping = Deribit.parse_message(msg)
     end
 
     test "ignores regular heartbeat" do
       msg = %{"method" => "heartbeat", "params" => %{"type" => "heartbeat"}}
-      assert :ignore = DeribitStream.parse_message(msg)
+      assert :ignore = Deribit.parse_message(msg)
     end
   end
 
   describe "ping_config/0" do
     test "returns ping config" do
-      {msg, interval} = DeribitStream.ping_config()
+      {msg, interval} = Deribit.ping_config()
       assert msg["method"] == "public/test"
       assert interval == 15_000
     end
@@ -175,7 +175,7 @@ defmodule Oracle.Sources.DeribitStreamTest do
 
   describe "supported_feeds/0" do
     test "returns expected feeds" do
-      feeds = DeribitStream.supported_feeds()
+      feeds = Deribit.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
       assert :book in feeds

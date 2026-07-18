@@ -1,4 +1,4 @@
-defmodule Oracle.Sources.BinanceStream do
+defmodule Oracle.Sources.Streams.Binance do
   @moduledoc """
   Binance WebSocket streaming adapter.
 
@@ -16,7 +16,7 @@ defmodule Oracle.Sources.BinanceStream do
   - `:liquidations` - Forced liquidation orders (futures)
   """
 
-  @behaviour Oracle.Sources.StreamSource
+  @behaviour Oracle.Sources.Streams
 
   alias Oracle.Feeds.{BookDelta, Liquidation, Ticker, Trade}
 

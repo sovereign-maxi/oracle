@@ -1,18 +1,18 @@
-defmodule Oracle.Sources.OkxStreamTest do
+defmodule Oracle.Sources.Streams.OkxTest do
   use ExUnit.Case, async: true
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Liquidation, Ticker, Trade}
-  alias Oracle.Sources.OkxStream
+  alias Oracle.Sources.Streams.Okx
 
   describe "name/0" do
     test "returns :okx" do
-      assert OkxStream.name() == :okx
+      assert Okx.name() == :okx
     end
   end
 
   describe "ws_url/1" do
     test "returns single endpoint" do
-      url = OkxStream.ws_url([])
+      url = Okx.ws_url([])
       assert url == "wss://ws.okx.com:8443/ws/v5/public"
     end
   end
@@ -20,7 +20,7 @@ defmodule Oracle.Sources.OkxStreamTest do
   describe "subscribe_messages/1" do
     test "returns subscribe message with args" do
       channels = [%{feed: :ticker, pair: :btc_usdt}]
-      [msg] = OkxStream.subscribe_messages(channels)
+      [msg] = Okx.subscribe_messages(channels)
       assert msg["op"] == "subscribe"
       assert is_list(msg["args"])
       [arg] = msg["args"]
@@ -46,7 +46,7 @@ defmodule Oracle.Sources.OkxStreamTest do
         ]
       }
 
-      assert {:ok, [%Ticker{} = ticker]} = OkxStream.parse_message(msg)
+      assert {:ok, [%Ticker{} = ticker]} = Okx.parse_message(msg)
       assert ticker.source == :okx
     end
 
@@ -65,7 +65,7 @@ defmodule Oracle.Sources.OkxStreamTest do
         ]
       }
 
-      assert {:ok, [%Trade{} = trade]} = OkxStream.parse_message(msg)
+      assert {:ok, [%Trade{} = trade]} = Okx.parse_message(msg)
       assert trade.source == :okx
       assert trade.side == :buy
     end
@@ -84,7 +84,7 @@ defmodule Oracle.Sources.OkxStreamTest do
         ]
       }
 
-      assert {:ok, [%BookSnapshot{} = snapshot]} = OkxStream.parse_message(msg)
+      assert {:ok, [%BookSnapshot{} = snapshot]} = Okx.parse_message(msg)
       assert snapshot.source == :okx
     end
 
@@ -104,7 +104,7 @@ defmodule Oracle.Sources.OkxStreamTest do
         ]
       }
 
-      assert {:ok, [%BookDelta{} = delta]} = OkxStream.parse_message(msg)
+      assert {:ok, [%BookDelta{} = delta]} = Okx.parse_message(msg)
       assert delta.source == :okx
     end
 
@@ -126,7 +126,7 @@ defmodule Oracle.Sources.OkxStreamTest do
         ]
       }
 
-      assert {:ok, [%Liquidation{} = liq]} = OkxStream.parse_message(msg)
+      assert {:ok, [%Liquidation{} = liq]} = Okx.parse_message(msg)
       assert liq.source == :okx
       assert liq.side == :sell
     end
@@ -144,22 +144,22 @@ defmodule Oracle.Sources.OkxStreamTest do
         ]
       }
 
-      assert {:ok, [%FundingRate{} = fr]} = OkxStream.parse_message(msg)
+      assert {:ok, [%FundingRate{} = fr]} = Okx.parse_message(msg)
       assert fr.source == :okx
     end
 
     test "ignores subscribe events" do
-      assert :ignore = OkxStream.parse_message(%{"event" => "subscribe"})
+      assert :ignore = Okx.parse_message(%{"event" => "subscribe"})
     end
 
     test "handles pong" do
-      assert :ping = OkxStream.parse_message(%{"op" => "pong"})
+      assert :ping = Okx.parse_message(%{"op" => "pong"})
     end
   end
 
   describe "ping_config/0" do
     test "returns ping config" do
-      {msg, interval} = OkxStream.ping_config()
+      {msg, interval} = Okx.ping_config()
       assert msg["op"] == "ping"
       assert interval == 25_000
     end
@@ -167,7 +167,7 @@ defmodule Oracle.Sources.OkxStreamTest do
 
   describe "supported_feeds/0" do
     test "returns expected feeds" do
-      feeds = OkxStream.supported_feeds()
+      feeds = Okx.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
       assert :book in feeds

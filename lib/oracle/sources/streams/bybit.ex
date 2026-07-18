@@ -1,4 +1,4 @@
-defmodule Oracle.Sources.BybitStream do
+defmodule Oracle.Sources.Streams.Bybit do
   @moduledoc """
   Bybit WebSocket streaming adapter.
 
@@ -17,7 +17,7 @@ defmodule Oracle.Sources.BybitStream do
   - `:funding_rate` - Perpetual futures funding rates
   """
 
-  @behaviour Oracle.Sources.StreamSource
+  @behaviour Oracle.Sources.Streams
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Liquidation, Ticker, Trade}
 

@@ -1,18 +1,18 @@
-defmodule Oracle.Sources.BybitStreamTest do
+defmodule Oracle.Sources.Streams.BybitTest do
   use ExUnit.Case, async: true
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, Liquidation, Ticker, Trade}
-  alias Oracle.Sources.BybitStream
+  alias Oracle.Sources.Streams.Bybit
 
   describe "name/0" do
     test "returns :bybit" do
-      assert BybitStream.name() == :bybit
+      assert Bybit.name() == :bybit
     end
   end
 
   describe "ws_url/1" do
     test "returns single endpoint" do
-      url = BybitStream.ws_url([])
+      url = Bybit.ws_url([])
       assert url == "wss://stream.bybit.com/v5/public/linear"
     end
   end
@@ -20,7 +20,7 @@ defmodule Oracle.Sources.BybitStreamTest do
   describe "subscribe_messages/1" do
     test "returns subscribe message with topics" do
       channels = [%{feed: :ticker, pair: :btcusdt}, %{feed: :trades, pair: :btcusdt}]
-      [msg] = BybitStream.subscribe_messages(channels)
+      [msg] = Bybit.subscribe_messages(channels)
       assert msg["op"] == "subscribe"
       assert is_list(msg["args"])
       assert length(msg["args"]) == 2
@@ -45,7 +45,7 @@ defmodule Oracle.Sources.BybitStreamTest do
         }
       }
 
-      assert {:ok, result} = BybitStream.parse_message(msg)
+      assert {:ok, result} = Bybit.parse_message(msg)
       ticker = Enum.find(result, &match?(%Ticker{}, &1))
       assert ticker.source == :bybit
       assert Decimal.equal?(ticker.price, Decimal.new("104523.45"))
@@ -67,7 +67,7 @@ defmodule Oracle.Sources.BybitStreamTest do
         ]
       }
 
-      assert {:ok, [%Trade{} = trade]} = BybitStream.parse_message(msg)
+      assert {:ok, [%Trade{} = trade]} = Bybit.parse_message(msg)
       assert trade.source == :bybit
       assert trade.side == :buy
     end
@@ -84,7 +84,7 @@ defmodule Oracle.Sources.BybitStreamTest do
         }
       }
 
-      assert {:ok, [%BookSnapshot{} = snapshot]} = BybitStream.parse_message(msg)
+      assert {:ok, [%BookSnapshot{} = snapshot]} = Bybit.parse_message(msg)
       assert snapshot.source == :bybit
       assert snapshot.sequence == 100
     end
@@ -101,7 +101,7 @@ defmodule Oracle.Sources.BybitStreamTest do
         }
       }
 
-      assert {:ok, [%BookDelta{} = delta]} = BybitStream.parse_message(msg)
+      assert {:ok, [%BookDelta{} = delta]} = Bybit.parse_message(msg)
       assert delta.source == :bybit
     end
 
@@ -118,23 +118,23 @@ defmodule Oracle.Sources.BybitStreamTest do
         }
       }
 
-      assert {:ok, [%Liquidation{} = liq]} = BybitStream.parse_message(msg)
+      assert {:ok, [%Liquidation{} = liq]} = Bybit.parse_message(msg)
       assert liq.source == :bybit
       assert liq.side == :sell
     end
 
     test "handles pong" do
-      assert :ping = BybitStream.parse_message(%{"op" => "pong"})
+      assert :ping = Bybit.parse_message(%{"op" => "pong"})
     end
 
     test "ignores subscribe confirmations" do
-      assert :ignore = BybitStream.parse_message(%{"success" => true})
+      assert :ignore = Bybit.parse_message(%{"success" => true})
     end
   end
 
   describe "ping_config/0" do
     test "returns ping config" do
-      {msg, interval} = BybitStream.ping_config()
+      {msg, interval} = Bybit.ping_config()
       assert msg["op"] == "ping"
       assert interval == 20_000
     end
@@ -142,7 +142,7 @@ defmodule Oracle.Sources.BybitStreamTest do
 
   describe "supported_feeds/0" do
     test "returns expected feeds" do
-      feeds = BybitStream.supported_feeds()
+      feeds = Bybit.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
       assert :book in feeds

@@ -1,18 +1,18 @@
-defmodule Oracle.Sources.KrakenStreamTest do
+defmodule Oracle.Sources.Streams.KrakenTest do
   use ExUnit.Case, async: true
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, Ticker, Trade}
-  alias Oracle.Sources.KrakenStream
+  alias Oracle.Sources.Streams.Kraken
 
   describe "name/0" do
     test "returns :kraken" do
-      assert KrakenStream.name() == :kraken
+      assert Kraken.name() == :kraken
     end
   end
 
   describe "ws_url/1" do
     test "returns single endpoint" do
-      url = KrakenStream.ws_url([])
+      url = Kraken.ws_url([])
       assert url == "wss://ws.kraken.com"
     end
   end
@@ -20,7 +20,7 @@ defmodule Oracle.Sources.KrakenStreamTest do
   describe "subscribe_messages/1" do
     test "returns subscribe message with pairs" do
       channels = [%{feed: :ticker, pair: :btc_usd}]
-      [msg] = KrakenStream.subscribe_messages(channels)
+      [msg] = Kraken.subscribe_messages(channels)
       assert msg["event"] == "subscribe"
       assert "XBT/USD" in msg["pair"]
       assert msg["subscription"]["name"] == "ticker"
@@ -43,7 +43,7 @@ defmodule Oracle.Sources.KrakenStreamTest do
         "XBT/USD"
       ]
 
-      assert {:ok, [%Ticker{} = ticker]} = KrakenStream.parse_message(msg)
+      assert {:ok, [%Ticker{} = ticker]} = Kraken.parse_message(msg)
       assert ticker.source == :kraken
       assert ticker.pair == :btc_usd
     end
@@ -56,7 +56,7 @@ defmodule Oracle.Sources.KrakenStreamTest do
         "XBT/USD"
       ]
 
-      assert {:ok, [%Trade{} = trade]} = KrakenStream.parse_message(msg)
+      assert {:ok, [%Trade{} = trade]} = Kraken.parse_message(msg)
       assert trade.source == :kraken
       assert trade.side == :buy
     end
@@ -72,7 +72,7 @@ defmodule Oracle.Sources.KrakenStreamTest do
         "XBT/USD"
       ]
 
-      assert {:ok, [%BookSnapshot{} = snapshot]} = KrakenStream.parse_message(msg)
+      assert {:ok, [%BookSnapshot{} = snapshot]} = Kraken.parse_message(msg)
       assert snapshot.source == :kraken
     end
 
@@ -87,26 +87,26 @@ defmodule Oracle.Sources.KrakenStreamTest do
         "XBT/USD"
       ]
 
-      assert {:ok, [%BookDelta{} = delta]} = KrakenStream.parse_message(msg)
+      assert {:ok, [%BookDelta{} = delta]} = Kraken.parse_message(msg)
       assert delta.source == :kraken
     end
 
     test "ignores heartbeat" do
-      assert :ignore = KrakenStream.parse_message(%{"event" => "heartbeat"})
+      assert :ignore = Kraken.parse_message(%{"event" => "heartbeat"})
     end
 
     test "handles pong" do
-      assert :ping = KrakenStream.parse_message(%{"event" => "pong"})
+      assert :ping = Kraken.parse_message(%{"event" => "pong"})
     end
 
     test "ignores subscription status" do
-      assert :ignore = KrakenStream.parse_message(%{"event" => "subscriptionStatus"})
+      assert :ignore = Kraken.parse_message(%{"event" => "subscriptionStatus"})
     end
   end
 
   describe "ping_config/0" do
     test "returns ping config" do
-      {msg, interval} = KrakenStream.ping_config()
+      {msg, interval} = Kraken.ping_config()
       assert msg["event"] == "ping"
       assert interval == 30_000
     end
@@ -114,7 +114,7 @@ defmodule Oracle.Sources.KrakenStreamTest do
 
   describe "supported_feeds/0" do
     test "returns expected feeds" do
-      feeds = KrakenStream.supported_feeds()
+      feeds = Kraken.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
       assert :book in feeds

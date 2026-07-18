@@ -1,4 +1,4 @@
-defmodule Oracle.Sources.CoinbaseStream do
+defmodule Oracle.Sources.Streams.Coinbase do
   @moduledoc """
   Coinbase WebSocket streaming adapter.
 
@@ -15,7 +15,7 @@ defmodule Oracle.Sources.CoinbaseStream do
   - `:book` - Level2 order book updates
   """
 
-  @behaviour Oracle.Sources.StreamSource
+  @behaviour Oracle.Sources.Streams
 
   alias Oracle.Feeds.{BookDelta, BookSnapshot, Ticker, Trade}
 

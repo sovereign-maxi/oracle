@@ -1,8 +1,8 @@
-defmodule Oracle.Sources.StreamSourceTest do
+defmodule Oracle.Sources.StreamsTest do
   use ExUnit.Case, async: true
 
   defmodule MockStream do
-    @behaviour Oracle.Sources.StreamSource
+    @behaviour Oracle.Sources.Streams
 
     @impl true
     def name, do: :mock
