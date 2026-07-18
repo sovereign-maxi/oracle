@@ -199,15 +199,17 @@ defmodule Oracle.Sources.Pyth do
 
   defp extract_parsed_entry(_, _), do: {:error, :parsed_section_missing}
 
-  defp to_parsed_entry(%{
-         "id" => id,
-         "price" => %{
-           "price" => price_str,
-           "expo" => expo,
-           "conf" => conf_str,
-           "publish_time" => pub_ts
-         }
-       } = entry) do
+  defp to_parsed_entry(
+         %{
+           "id" => id,
+           "price" => %{
+             "price" => price_str,
+             "expo" => expo,
+             "conf" => conf_str,
+             "publish_time" => pub_ts
+           }
+         } = entry
+       ) do
     {:ok,
      %{
        id: id,

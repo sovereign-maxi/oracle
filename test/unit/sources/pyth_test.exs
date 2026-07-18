@@ -8,7 +8,10 @@ defmodule Oracle.Sources.PythTest do
       cond do
         # Signed endpoint — MSTR
         String.contains?(url, "/v2/updates/price/latest") and
-            String.contains?(url, "e1d3bdd12c3aebc47e3ac68b1c8afce3d8f9d0e29cf39c17deaf59e0f0f8b30d") ->
+            String.contains?(
+              url,
+              "e1d3bdd12c3aebc47e3ac68b1c8afce3d8f9d0e29cf39c17deaf59e0f0f8b30d"
+            ) ->
           {:ok,
            %{
              status_code: 200,
