@@ -44,18 +44,25 @@ defmodule Oracle.Events do
     - `price` - Price as Decimal
     - `volume` - Trading volume in base currency (optional, for VWAP)
     - `timestamp` - When the tick was received
+    - `provenance` - Optional source-signed material (e.g., Pyth VAA bytes,
+      Chainlink signature, publish_time from the source). Present when the
+      adapter fetches a cryptographically signed feed; nil otherwise.
+      Shape is source-specific — consumers pattern-match on `:kind` in the map.
     - `version` - Event schema version
     """
+    @type provenance :: %{required(:kind) => atom(), optional(atom()) => term()} | nil
+
     @type t :: %__MODULE__{
             source: atom(),
             pair: atom(),
             price: Decimal.t(),
             volume: non_neg_integer() | nil,
             timestamp: DateTime.t(),
+            provenance: provenance(),
             version: pos_integer()
           }
 
-    defstruct [:source, :pair, :price, :volume, :timestamp, version: 1]
+    defstruct [:source, :pair, :price, :volume, :timestamp, :provenance, version: 1]
   end
 
   defmodule IndicatorsRequested do
@@ -97,6 +104,12 @@ defmodule Oracle.Events do
     - `price` - Aggregated price as Decimal
     - `sources` - List of sources that contributed to this price
     - `timestamp` - Latest timestamp from input ticks
+    - `provenances` - Optional list of per-source provenance blobs preserved
+      from the input `PriceTick`s. Same length and ordering as `sources` when
+      present. `nil` on aggregations from unsigned feeds. Consumers that need
+      to attest to an aggregation (e.g. Turbos' barrier / settlement
+      attestations) preserve these end-to-end so the raw signed data can be
+      republished for independent verification.
     - `version` - Event schema version
     """
     @type t :: %__MODULE__{
@@ -104,10 +117,11 @@ defmodule Oracle.Events do
             price: Decimal.t(),
             sources: [atom()],
             timestamp: DateTime.t(),
+            provenances: [PriceTick.provenance()] | nil,
             version: pos_integer()
           }
 
-    defstruct [:pair, :price, :sources, :timestamp, version: 1]
+    defstruct [:pair, :price, :sources, :timestamp, :provenances, version: 1]
   end
 
   defmodule DerivedPriceUpdated do

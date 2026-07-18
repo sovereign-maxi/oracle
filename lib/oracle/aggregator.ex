@@ -82,6 +82,7 @@ defmodule Oracle.Aggregator do
   defp do_aggregate(ticks, config) do
     prices = Enum.map(ticks, & &1.price)
     sources = Enum.map(ticks, & &1.source)
+    provenances = preserve_provenances(ticks)
     pair = hd(ticks).pair
     timestamp = latest_timestamp(ticks)
 
@@ -99,6 +100,7 @@ defmodule Oracle.Aggregator do
       price: aggregated,
       sources: sources,
       timestamp: timestamp,
+      provenances: provenances,
       version: 1
     }
 
@@ -112,6 +114,22 @@ defmodule Oracle.Aggregator do
       end
 
     {:ok, [price_event | outlier_events]}
+  end
+
+  # Preserve per-tick provenance in aggregation output. If every tick lacks
+  # provenance the returned aggregation has `nil` (indistinguishable from an
+  # unsigned-feed aggregation). Any tick carrying provenance flips the list on
+  # for the whole aggregation so downstream attestation code sees the full
+  # per-source slice, using `:absent` as a placeholder for un-signed sources
+  # (kept ordering-aligned with `sources`).
+  defp preserve_provenances(ticks) do
+    any_present? = Enum.any?(ticks, &(&1.provenance != nil))
+
+    if any_present? do
+      Enum.map(ticks, fn tick -> tick.provenance || %{kind: :absent} end)
+    else
+      nil
+    end
   end
 
   # ─────────────────────────────────────────────────────────────
