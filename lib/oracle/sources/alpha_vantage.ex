@@ -92,6 +92,34 @@ defmodule Oracle.Sources.AlphaVantage do
     end
   end
 
+  @doc """
+  Returns the last ~100 1-minute intraday bars for `pair`, oldest →
+  newest. Backed by `TIME_SERIES_INTRADAY` with the realtime
+  entitlement — premium-only endpoint. Newest bar is the current
+  in-progress minute.
+  """
+  @spec fetch_intraday_1min(atom()) ::
+          {:ok,
+           [
+             %{
+               ts: DateTime.t(),
+               open: Decimal.t(),
+               high: Decimal.t(),
+               low: Decimal.t(),
+               close: Decimal.t(),
+               price: Decimal.t(),
+               volume: integer()
+             }
+           ]}
+          | {:error, atom()}
+  def fetch_intraday_1min(pair) when is_atom(pair) do
+    with {:ok, symbol} <- pair_to_symbol(pair),
+         {:ok, api_key} <- api_key(),
+         {:ok, body} <- do_get(intraday_url(symbol, api_key)) do
+      parse_series(body, "Time Series (1min)")
+    end
+  end
+
   # --- Internal ---
 
   defp pair_to_symbol(pair) do
@@ -128,17 +156,17 @@ defmodule Oracle.Sources.AlphaVantage do
       "&apikey=" <> URI.encode(api_key)
   end
 
-  # Premium endpoint (once the venue is on a paid key):
-  #
-  #   ?function=TIME_SERIES_INTRADAY
-  #   &interval=1min
-  #   &outputsize=compact
-  #   &symbol=<SYMBOL>
-  #   &entitlement=realtime
-  #   &apikey=<KEY>
-  #
-  # Swap `daily_url/2` for the intraday variant + the `parse_series`
-  # key to `"Time Series (1min)"` to light up 1-minute bars.
+  defp intraday_url(symbol, api_key) do
+    @base_url <>
+      "?function=TIME_SERIES_INTRADAY" <>
+      "&interval=1min" <>
+      "&outputsize=compact" <>
+      "&symbol=" <> URI.encode(symbol) <>
+      "&entitlement=realtime" <>
+      "&apikey=" <> URI.encode(api_key)
+  end
+
+  # Free-tier fallback (kept for callers without a premium key).
   defp daily_url(symbol, api_key) do
     @base_url <>
       "?function=TIME_SERIES_DAILY" <>
