@@ -5,7 +5,7 @@ defmodule Oracle.Sources.Pyth do
   Fetches aggregated prices from the Pyth Foundation's public Hermes
   HTTP endpoint. Hermes serves the latest aggregated price for every
   feed on Pythnet without on-chain interaction, API key, or fee (free
-  tier is 10s update cadence, sufficient for TURBOS 5-min warrants).
+  tier is 10s update cadence).
 
   ## Supported Pairs
 
