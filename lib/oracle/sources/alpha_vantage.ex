@@ -161,7 +161,8 @@ defmodule Oracle.Sources.AlphaVantage do
       "?function=TIME_SERIES_INTRADAY" <>
       "&interval=1min" <>
       "&outputsize=compact" <>
-      "&symbol=" <> URI.encode(symbol) <>
+      "&symbol=" <>
+      URI.encode(symbol) <>
       "&entitlement=realtime" <>
       "&apikey=" <> URI.encode(api_key)
   end

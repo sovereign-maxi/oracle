@@ -20,6 +20,7 @@ defmodule Oracle.Aggregator do
   alias Oracle.Events.{PriceStale, PriceTick, PriceUpdated, SourceOutlier}
 
   @default_outlier_threshold 5.0
+  @default_max_swing_percent 10.0
 
   # ─────────────────────────────────────────────────────────────
   # Price Aggregation
@@ -36,6 +37,12 @@ defmodule Oracle.Aggregator do
     - `min_sources` - Minimum sources required
     - `outlier_threshold` - Percent deviation to flag as outlier (default 5.0)
     - `detect_outliers` - Whether to detect and report outliers (default false)
+    - `prior_price` - Optional prior aggregated price (`Decimal.t()`) used
+      to enforce the max-swing sanity floor. When absent, the swing check
+      is skipped (first tick post-boot).
+    - `max_swing_percent` - Optional percent deviation from `prior_price`
+      above which a candidate aggregation is rejected as :max_swing_exceeded
+      (default 10.0).
 
   ## Returns
 
@@ -44,6 +51,17 @@ defmodule Oracle.Aggregator do
   - `{:error, :empty_ticks, []}` - No ticks provided
   - `{:error, :mixed_pairs, []}` - Ticks for different pairs
   - `{:error, :negative_price, []}` - Negative price detected
+  - `{:error, :zero_price, []}` - Zero price detected
+  - `{:error, :max_swing_exceeded, []}` - Aggregated price deviates from
+    `prior_price` by more than the swing cap (only when `prior_price` is
+    supplied)
+
+  ## Telemetry
+
+  On rejection, emits `[:oracle, :aggregator, :rejected]` with
+  measurements `%{count: 1}` and metadata
+  `%{reason: :zero | :max_swing_exceeded | ...}`. The Watchdog
+  attaches to this event to feed the operator alert surface.
   """
   @spec aggregate([PriceTick.t()], map()) :: {:ok, [struct()]} | {:error, atom(), list()}
   def aggregate(ticks, config \\ %{strategy: :median, min_sources: 2})
@@ -68,15 +86,92 @@ defmodule Oracle.Aggregator do
     if length(pairs) > 1 do
       {:error, :mixed_pairs, []}
     else
-      prices = Enum.map(ticks, & &1.price)
-      has_negative = Enum.any?(prices, &(Decimal.compare(&1, Decimal.new(0)) == :lt))
-
-      if has_negative do
-        {:error, :negative_price, []}
-      else
-        do_aggregate(ticks, config)
-      end
+      do_validate_and_aggregate(ticks, config, hd(pairs))
     end
+  end
+
+  defp do_validate_and_aggregate(ticks, config, pair) do
+    prices = Enum.map(ticks, & &1.price)
+
+    cond do
+      Enum.any?(prices, &(Decimal.compare(&1, Decimal.new(0)) == :lt)) ->
+        emit_rejected(:negative_price, pair)
+        {:error, :negative_price, []}
+
+      Enum.any?(prices, &(Decimal.compare(&1, Decimal.new(0)) == :eq)) ->
+        emit_rejected(:zero, pair)
+        {:error, :zero_price, []}
+
+      true ->
+        aggregate_and_swing_check(ticks, config, pair)
+    end
+  end
+
+  defp aggregate_and_swing_check(ticks, config, pair) do
+    case do_aggregate(ticks, config) do
+      {:ok, [%PriceUpdated{price: candidate} | _]} = ok ->
+        case swing_check(candidate, config) do
+          :ok ->
+            ok
+
+          {:error, :max_swing_exceeded} ->
+            emit_rejected(:max_swing_exceeded, pair)
+            {:error, :max_swing_exceeded, []}
+        end
+
+      other ->
+        other
+    end
+  end
+
+  # Rejects aggregations that swing by more than `max_swing_percent`
+  # from `prior_price` (both from config). When `prior_price` is
+  # nil / missing / non-positive we skip the check — first tick
+  # post-boot has no basis for comparison.
+  defp swing_check(_candidate, %{prior_price: nil}), do: :ok
+
+  defp swing_check(%Decimal{} = candidate, config) do
+    case Map.get(config, :prior_price) do
+      nil ->
+        :ok
+
+      %Decimal{} = prior ->
+        case Decimal.compare(prior, Decimal.new(0)) do
+          :gt -> compare_swing(candidate, prior, config)
+          _ -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp swing_check(_candidate, _config), do: :ok
+
+  defp compare_swing(candidate, prior, config) do
+    max_percent = Map.get(config, :max_swing_percent, @default_max_swing_percent)
+    threshold_frac = Decimal.div(to_decimal(max_percent), Decimal.new(100))
+
+    delta = Decimal.abs(Decimal.sub(candidate, prior))
+    ratio = Decimal.div(delta, prior)
+
+    if Decimal.compare(ratio, threshold_frac) == :gt do
+      {:error, :max_swing_exceeded}
+    else
+      :ok
+    end
+  end
+
+  defp emit_rejected(reason, pair) do
+    :telemetry.execute(
+      [:oracle, :aggregator, :rejected],
+      %{count: 1},
+      %{reason: reason, pair: pair}
+    )
+  rescue
+    # :telemetry may not be installed in every consumer of the substrate
+    # oracle library. Swallow rather than crash the aggregation.
+    _ -> :ok
   end
 
   defp do_aggregate(ticks, config) do

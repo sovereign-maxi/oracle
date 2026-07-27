@@ -147,6 +147,177 @@ defmodule Oracle.AggregatorTest do
       assert {:error, :negative_price, []} = Aggregator.aggregate(ticks)
     end
 
+    test "fails with zero price" do
+      timestamp = DateTime.utc_now()
+
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("100000"),
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new(0),
+          timestamp: timestamp
+        }
+      ]
+
+      assert {:error, :zero_price, []} = Aggregator.aggregate(ticks)
+    end
+
+    test "emits [:oracle, :aggregator, :rejected] telemetry with :zero reason" do
+      handler = "aggregator-zero-#{System.unique_integer([:positive])}"
+      test_pid = self()
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler,
+        [:oracle, :aggregator, :rejected],
+        fn _evt, measurements, metadata, _ ->
+          send(test_pid, {ref, measurements, metadata})
+        end,
+        nil
+      )
+
+      timestamp = DateTime.utc_now()
+
+      ticks = [
+        %PriceTick{source: :binance, pair: :btc_usd, price: Decimal.new(0), timestamp: timestamp},
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new(0),
+          timestamp: timestamp
+        }
+      ]
+
+      assert {:error, :zero_price, []} = Aggregator.aggregate(ticks)
+
+      assert_receive {^ref, %{count: 1}, %{reason: :zero, pair: :btc_usd}}, 500
+
+      :telemetry.detach(handler)
+    end
+
+    test "rejects :max_swing_exceeded when candidate deviates > swing cap from prior" do
+      handler = "aggregator-swing-#{System.unique_integer([:positive])}"
+      test_pid = self()
+      ref = make_ref()
+
+      :telemetry.attach(
+        handler,
+        [:oracle, :aggregator, :rejected],
+        fn _evt, measurements, metadata, _ ->
+          send(test_pid, {ref, measurements, metadata})
+        end,
+        nil
+      )
+
+      timestamp = DateTime.utc_now()
+
+      # Prior 200, candidate median 100 = 50% swing, above default 10%.
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("100"),
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new("100"),
+          timestamp: timestamp
+        }
+      ]
+
+      config = %{strategy: :median, min_sources: 2, prior_price: Decimal.new("200")}
+
+      assert {:error, :max_swing_exceeded, []} = Aggregator.aggregate(ticks, config)
+
+      assert_receive {^ref, %{count: 1}, %{reason: :max_swing_exceeded, pair: :btc_usd}}, 500
+
+      :telemetry.detach(handler)
+    end
+
+    test "accepts candidate within swing cap" do
+      timestamp = DateTime.utc_now()
+
+      # Prior 200, candidate 210 = 5% swing, below default 10%.
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("210"),
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new("210"),
+          timestamp: timestamp
+        }
+      ]
+
+      config = %{strategy: :median, min_sources: 2, prior_price: Decimal.new("200")}
+
+      assert {:ok, [%PriceUpdated{}]} = Aggregator.aggregate(ticks, config)
+    end
+
+    test "skips swing check when prior_price is nil (first tick post-boot)" do
+      timestamp = DateTime.utc_now()
+
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("100"),
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new("100"),
+          timestamp: timestamp
+        }
+      ]
+
+      config = %{strategy: :median, min_sources: 2, prior_price: nil}
+
+      assert {:ok, [%PriceUpdated{}]} = Aggregator.aggregate(ticks, config)
+    end
+
+    test "honours override :max_swing_percent" do
+      timestamp = DateTime.utc_now()
+
+      # 5% swing candidate, override cap to 1% → reject.
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("210"),
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new("210"),
+          timestamp: timestamp
+        }
+      ]
+
+      config = %{
+        strategy: :median,
+        min_sources: 2,
+        prior_price: Decimal.new("200"),
+        max_swing_percent: 1.0
+      }
+
+      assert {:error, :max_swing_exceeded, []} = Aggregator.aggregate(ticks, config)
+    end
+
     test "uses latest timestamp from ticks" do
       old_time = ~U[2026-01-01 00:00:00Z]
       new_time = ~U[2026-01-01 00:00:05Z]
