@@ -44,7 +44,7 @@ defmodule Oracle.Sources.Streams do
   - `:funding_rate` - Perpetual futures funding rates
   """
 
-  @type feed :: :ticker | :trades | :book | :liquidations | :funding_rate
+  @type feed :: :ticker | :book_ticker | :trades | :book | :liquidations | :funding_rate
 
   @type channel :: %{feed: feed(), pair: atom()}
 

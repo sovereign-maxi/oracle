@@ -265,12 +265,12 @@ defmodule Oracle.Sources.Streams.Okx do
   defp pair_to_inst(:eth_usdt), do: "ETH-USDT-SWAP"
   defp pair_to_inst(:btc_usd), do: "BTC-USD-SWAP"
 
-  defp pair_to_inst(pair) do
-    pair
-    |> Atom.to_string()
-    |> String.upcase()
-    |> String.replace("_", "-")
-    |> Kernel.<>("-SWAP")
+  # OKX tokenized-stock spot products carry an `X` prefix (XMSTR,
+  # XNVDA, XAAPL, etc.). They're SPOT instruments, not swaps —
+  # instId omits the `-SWAP` suffix.
+  defp pair_to_inst(pair) when is_atom(pair) do
+    str = pair |> Atom.to_string() |> String.upcase() |> String.replace("_", "-")
+    if String.starts_with?(str, "X"), do: str, else: str <> "-SWAP"
   end
 
   defp inst_to_pair(inst_id) when is_binary(inst_id) do

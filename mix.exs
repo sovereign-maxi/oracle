@@ -33,7 +33,9 @@ defmodule Oracle.MixProject do
     [
       {:core, path: "../core"},
       {:decimal, "~> 3.0"},
+      {:gun, "~> 2.1"},
       {:jason, "~> 1.4"},
+      {:mint_web_socket, "~> 1.0"},
 
       # Dev/Test
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

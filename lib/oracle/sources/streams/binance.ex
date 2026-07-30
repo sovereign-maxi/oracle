@@ -41,6 +41,7 @@ defmodule Oracle.Sources.Streams.Binance do
   def parse_message(%{"stream" => stream, "data" => data}) do
     cond do
       String.ends_with?(stream, "@miniTicker") -> parse_ticker(data)
+      String.ends_with?(stream, "@bookTicker") -> parse_book_ticker(data)
       String.ends_with?(stream, "@trade") -> parse_trade(data)
       String.ends_with?(stream, "@depth") -> parse_depth(data)
       String.ends_with?(stream, "@forceOrder") -> parse_liquidation(data)
@@ -56,7 +57,7 @@ defmodule Oracle.Sources.Streams.Binance do
   def ping_config, do: nil
 
   @impl true
-  def supported_feeds, do: [:ticker, :trades, :book, :liquidations]
+  def supported_feeds, do: [:ticker, :book_ticker, :trades, :book, :liquidations]
 
   # ─────────────────────────────────────────────────────────────
   # Private Functions
@@ -64,6 +65,10 @@ defmodule Oracle.Sources.Streams.Binance do
 
   defp channel_to_stream(%{feed: :ticker, pair: pair}) do
     "#{pair_to_symbol(pair)}@miniTicker"
+  end
+
+  defp channel_to_stream(%{feed: :book_ticker, pair: pair}) do
+    "#{pair_to_symbol(pair)}@bookTicker"
   end
 
   defp channel_to_stream(%{feed: :trades, pair: pair}) do
@@ -102,6 +107,37 @@ defmodule Oracle.Sources.Streams.Binance do
       _ -> {:error, :invalid_ticker_data}
     end
   end
+
+  # `@bookTicker` — best bid/ask top-of-book, fires on every change.
+  # No event timestamp in the payload (SPOT feed); wall-clock is the
+  # only signal we have. Price = mid (bid+ask)/2 so median aggregation
+  # across sources is comparing like-for-like.
+  defp parse_book_ticker(%{"s" => sym} = data) do
+    with {:ok, bid} <- safe_decimal(data["b"]),
+         {:ok, ask} <- safe_decimal(data["a"]) do
+      mid = bid |> Decimal.add(ask) |> Decimal.div(2)
+
+      {:ok,
+       [
+         %Ticker{
+           source: :binance,
+           pair: symbol_to_pair(sym),
+           price: mid,
+           bid: bid,
+           ask: ask,
+           volume_24h: nil,
+           change_24h: nil,
+           high_24h: nil,
+           low_24h: nil,
+           timestamp: DateTime.utc_now()
+         }
+       ]}
+    else
+      _ -> {:error, :invalid_book_ticker}
+    end
+  end
+
+  defp parse_book_ticker(_), do: {:error, :invalid_book_ticker}
 
   defp parse_trade(data) do
     with {:ok, price} <- safe_decimal(data["p"]),

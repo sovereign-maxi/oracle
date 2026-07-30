@@ -53,6 +53,92 @@ defmodule Oracle.Sources.Binance do
   end
 
   @doc """
+  Fetches recent OHLCV klines for `pair` at the given `interval`.
+
+  ## Parameters
+
+  - `pair` — one of the mapped atoms (e.g. `:mstrbusdt`)
+  - `opts`
+    - `:interval` — string like `"1m"`, `"5m"`, `"1h"` (default `"1m"`)
+    - `:limit` — max 1000 (default 100)
+
+  ## Response
+
+      [
+        %{
+          ts: ~U[2026-07-30 06:39:00Z],
+          open: Decimal.new("95.30"),
+          high: Decimal.new("95.40"),
+          low: Decimal.new("95.30"),
+          close: Decimal.new("95.40"),
+          volume: 20
+        },
+        ...
+      ]
+
+  Oldest → newest ordering. Public endpoint, no auth required.
+  """
+  @spec fetch_klines(atom(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def fetch_klines(pair, opts \\ []) do
+    interval = Keyword.get(opts, :interval, "1m")
+    limit = Keyword.get(opts, :limit, 100)
+    symbol = pair_to_symbol(pair)
+
+    case http_get("/api/v3/klines?symbol=#{symbol}&interval=#{interval}&limit=#{limit}") do
+      {:ok, klines} when is_list(klines) ->
+        {:ok, Enum.map(klines, &parse_kline/1)}
+
+      {:ok, %{"code" => code, "msg" => msg}} ->
+        {:error, {:api_error, code, msg}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Fetches rolling 24-hour stats for `pair`.
+
+  Returns:
+
+      %{
+        price: Decimal.new("95.44"),
+        change: Decimal.new("-2.35"),
+        change_pct: Decimal.new("-2.403"),
+        open_24h: Decimal.new("97.79"),
+        high_24h: Decimal.new("100.07"),
+        low_24h: Decimal.new("92.28"),
+        volume_24h: 14775
+      }
+
+  Public endpoint, no auth. Cheap to call per underlying every few seconds.
+  """
+  @spec fetch_24h_stats(atom()) :: {:ok, map()} | {:error, term()}
+  def fetch_24h_stats(pair) do
+    symbol = pair_to_symbol(pair)
+
+    case http_get("/api/v3/ticker/24hr?symbol=#{symbol}") do
+      {:ok, %{"lastPrice" => _} = resp} ->
+        {:ok,
+         %{
+           price: decimal_or_zero(resp["lastPrice"]),
+           change: decimal_or_zero(resp["priceChange"]),
+           change_pct: decimal_or_zero(resp["priceChangePercent"]),
+           open_24h: decimal_or_zero(resp["openPrice"]),
+           high_24h: decimal_or_zero(resp["highPrice"]),
+           low_24h: decimal_or_zero(resp["lowPrice"]),
+           volume_24h: parse_volume(resp["volume"])
+         }}
+
+      {:ok, %{"code" => code, "msg" => msg}} ->
+        {:error, {:api_error, code, msg}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Fetches prices for multiple pairs in a single request.
 
   More efficient than calling `fetch_price/1` multiple times.
@@ -96,6 +182,8 @@ defmodule Oracle.Sources.Binance do
   defp pair_to_symbol(:btc_eur), do: "BTCEUR"
   defp pair_to_symbol(:eth_btc), do: "ETHBTC"
   defp pair_to_symbol(:xau_usd), do: "PAXGUSDT"
+  # Tokenized-stock spot products (Binance's `B`-suffix convention).
+  defp pair_to_symbol(:mstrbusdt), do: "MSTRBUSDT"
 
   defp pair_to_symbol(pair) do
     symbol = pair |> Atom.to_string() |> String.upcase() |> String.replace("_", "")
@@ -140,6 +228,37 @@ defmodule Oracle.Sources.Binance do
   end
 
   defp parse_price(price), do: {:error, {:invalid_price, price}}
+
+  # Binance kline array shape (index-based):
+  #   [ open_ms, open_str, high_str, low_str, close_str, volume_str, ... ]
+  defp parse_kline([open_ms, o, h, l, c, v | _rest]) do
+    %{
+      ts: DateTime.from_unix!(open_ms, :millisecond),
+      open: decimal_or_zero(o),
+      high: decimal_or_zero(h),
+      low: decimal_or_zero(l),
+      close: decimal_or_zero(c),
+      volume: parse_volume(v)
+    }
+  end
+
+  defp decimal_or_zero(str) when is_binary(str) do
+    case Decimal.parse(str) do
+      {d, ""} -> d
+      _ -> Decimal.new(0)
+    end
+  end
+
+  defp decimal_or_zero(_), do: Decimal.new(0)
+
+  defp parse_volume(str) when is_binary(str) do
+    case Float.parse(str) do
+      {f, _} -> trunc(f)
+      _ -> 0
+    end
+  end
+
+  defp parse_volume(_), do: 0
 
   defp http_get(path) do
     url = @base_url <> path
