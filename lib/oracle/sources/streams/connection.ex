@@ -129,8 +129,7 @@ defmodule Oracle.Sources.Streams.Connection do
       ) do
     send_subscribes(state)
 
-    {:noreply,
-     %{state | conn_state: :ready, backoff_ms: @reconnect_min_ms} |> schedule_ping()}
+    {:noreply, %{state | conn_state: :ready, backoff_ms: @reconnect_min_ms} |> schedule_ping()}
   end
 
   # WebSocket handshake rejected
@@ -138,9 +137,7 @@ defmodule Oracle.Sources.Streams.Connection do
         {:gun_response, gun_pid, ws_ref, _fin, status, _headers},
         %{gun_pid: gun_pid, ws_ref: ws_ref} = state
       ) do
-    Logger.info(
-      "StreamConn: upgrade rejected, adapter=#{inspect(state.adapter)}, status=#{status}"
-    )
+    Logger.info("StreamConn: upgrade rejected, adapter=#{inspect(state.adapter)}, status=#{status}")
 
     teardown(state)
     schedule_reconnect(state)
