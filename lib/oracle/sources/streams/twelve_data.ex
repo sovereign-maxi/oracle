@@ -2,8 +2,7 @@ defmodule Oracle.Sources.Streams.TwelveData do
   @moduledoc """
   Twelve Data WebSocket streaming adapter.
 
-  Push-based real-time price ticks for US equities (and FX, crypto,
-  indices — but the stack currently uses it for MSTR only).
+  Push-based real-time price ticks for US equities.
 
   ## WebSocket Endpoint
 
@@ -28,18 +27,6 @@ defmodule Oracle.Sources.Streams.TwelveData do
         "ask":       "329.21",
         "day_volume":"12345678"
       }
-
-  ## Identity model
-
-  API-key auth (email + card at signup, no KYC). URL carries the key
-  as a query param — TLS shields it from network middleboxes but any
-  request log on the caller's side WILL capture it.
-
-  ## Credit model
-
-  $99/mo tier: 610 API + 500 WS credits. One symbol subscribed per
-  process = 1 WS credit; 3 prod + 3 staging nodes × MSTR = 6 credits
-  well under the cap.
   """
 
   @behaviour Oracle.Sources.Streams
@@ -100,8 +87,9 @@ defmodule Oracle.Sources.Streams.TwelveData do
   def parse_message(%{"event" => "subscribe-status"}), do: :ignore
   def parse_message(%{"event" => "heartbeat"}), do: :ignore
   # Server-side errors come as {"status":"error", "code":..., "message":...}
-  # without an "event" key.
-  def parse_message(%{"status" => "error"}), do: :ignore
+  # without an "event" key. Surface them — a dead channel must not look
+  # like a quiet one.
+  def parse_message(%{"status" => "error"} = msg), do: {:error, {:twelve_data_error, msg}}
   def parse_message(_), do: :ignore
 
   @impl true

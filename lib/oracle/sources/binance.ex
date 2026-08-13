@@ -71,10 +71,13 @@ defmodule Oracle.Sources.Binance do
           high: Decimal.new("95.40"),
           low: Decimal.new("95.30"),
           close: Decimal.new("95.40"),
-          volume: 20
+          volume: Decimal.new("20.5")
         },
         ...
       ]
+
+  Any malformed kline fails the whole call — a gap in the series is
+  never returned as if valid.
 
   Oldest → newest ordering. Public endpoint, no auth required.
   """
@@ -86,7 +89,16 @@ defmodule Oracle.Sources.Binance do
 
     case http_get("/api/v3/klines?symbol=#{symbol}&interval=#{interval}&limit=#{limit}") do
       {:ok, klines} when is_list(klines) ->
-        {:ok, Enum.map(klines, &parse_kline/1)}
+        klines
+        |> Enum.map(&parse_kline/1)
+        |> Enum.reduce_while({:ok, []}, fn
+          {:ok, kline}, {:ok, acc} -> {:cont, {:ok, [kline | acc]}}
+          {:error, _}, _acc -> {:halt, {:error, :invalid_kline_data}}
+        end)
+        |> case do
+          {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
+          error -> error
+        end
 
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
@@ -108,8 +120,11 @@ defmodule Oracle.Sources.Binance do
         open_24h: Decimal.new("97.79"),
         high_24h: Decimal.new("100.07"),
         low_24h: Decimal.new("92.28"),
-        volume_24h: 14775
+        volume_24h: Decimal.new("14775.25")
       }
+
+  Any malformed field fails the whole call — a partial or zero-filled
+  stats map is never returned as if valid.
 
   Public endpoint, no auth. Cheap to call per underlying every few seconds.
   """
@@ -119,16 +134,26 @@ defmodule Oracle.Sources.Binance do
 
     case http_get("/api/v3/ticker/24hr?symbol=#{symbol}") do
       {:ok, %{"lastPrice" => _} = resp} ->
-        {:ok,
-         %{
-           price: decimal_or_zero(resp["lastPrice"]),
-           change: decimal_or_zero(resp["priceChange"]),
-           change_pct: decimal_or_zero(resp["priceChangePercent"]),
-           open_24h: decimal_or_zero(resp["openPrice"]),
-           high_24h: decimal_or_zero(resp["highPrice"]),
-           low_24h: decimal_or_zero(resp["lowPrice"]),
-           volume_24h: parse_volume(resp["volume"])
-         }}
+        with {:ok, price} <- parse_price(resp["lastPrice"]),
+             {:ok, change} <- parse_signed(resp["priceChange"]),
+             {:ok, change_pct} <- parse_signed(resp["priceChangePercent"]),
+             {:ok, open} <- parse_price(resp["openPrice"]),
+             {:ok, high} <- parse_price(resp["highPrice"]),
+             {:ok, low} <- parse_price(resp["lowPrice"]),
+             {:ok, volume} <- parse_volume(resp["volume"]) do
+          {:ok,
+           %{
+             price: price,
+             change: change,
+             change_pct: change_pct,
+             open_24h: open,
+             high_24h: high,
+             low_24h: low,
+             volume_24h: volume
+           }}
+        else
+          _ -> {:error, :invalid_stats_data}
+        end
 
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
@@ -200,6 +225,8 @@ defmodule Oracle.Sources.Binance do
   defp symbol_to_pair("ETHUSDT"), do: {:ok, :eth_usdt}
   defp symbol_to_pair("BTCEUR"), do: {:ok, :btc_eur}
   defp symbol_to_pair("ETHBTC"), do: {:ok, :eth_btc}
+  defp symbol_to_pair("PAXGUSDT"), do: {:ok, :xau_usd}
+  defp symbol_to_pair("MSTRBUSDT"), do: {:ok, :mstrbusdt}
   defp symbol_to_pair(_), do: :error
 
   defp parse_price(nil), do: {:error, {:invalid_price, nil}}
@@ -232,33 +259,54 @@ defmodule Oracle.Sources.Binance do
   # Binance kline array shape (index-based):
   #   [ open_ms, open_str, high_str, low_str, close_str, volume_str, ... ]
   defp parse_kline([open_ms, o, h, l, c, v | _rest]) do
-    %{
-      ts: DateTime.from_unix!(open_ms, :millisecond),
-      open: decimal_or_zero(o),
-      high: decimal_or_zero(h),
-      low: decimal_or_zero(l),
-      close: decimal_or_zero(c),
-      volume: parse_volume(v)
-    }
-  end
-
-  defp decimal_or_zero(str) when is_binary(str) do
-    case Decimal.parse(str) do
-      {d, ""} -> d
-      _ -> Decimal.new(0)
+    with {:ok, open} <- parse_price(o),
+         {:ok, high} <- parse_price(h),
+         {:ok, low} <- parse_price(l),
+         {:ok, close} <- parse_price(c),
+         {:ok, volume} <- parse_volume(v) do
+      {:ok,
+       %{
+         ts: DateTime.from_unix!(open_ms, :millisecond),
+         open: open,
+         high: high,
+         low: low,
+         close: close,
+         volume: volume
+       }}
+    else
+      _ -> {:error, :invalid_kline_data}
     end
   end
 
-  defp decimal_or_zero(_), do: Decimal.new(0)
+  defp parse_kline(_), do: {:error, :invalid_kline_data}
 
+  # Signed fields (24h change) can legitimately be negative — only the
+  # shape is validated.
+  defp parse_signed(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {decimal, ""} -> {:ok, decimal}
+      _ -> {:error, {:invalid_decimal, value}}
+    end
+  end
+
+  defp parse_signed(value) when is_number(value), do: {:ok, Decimal.new("#{value}")}
+  defp parse_signed(_), do: {:error, :invalid_value}
+
+  # Base volume is fractional (e.g. BTC) — keep full precision.
   defp parse_volume(str) when is_binary(str) do
-    case Float.parse(str) do
-      {f, _} -> trunc(f)
-      _ -> 0
+    case Decimal.parse(str) do
+      {decimal, ""} ->
+        if Decimal.negative?(decimal), do: {:error, :invalid_volume}, else: {:ok, decimal}
+
+      _ ->
+        {:error, {:invalid_volume, str}}
     end
   end
 
-  defp parse_volume(_), do: 0
+  defp parse_volume(value) when is_number(value) and value >= 0,
+    do: {:ok, Decimal.new("#{value}")}
+
+  defp parse_volume(_), do: {:error, :invalid_volume}
 
   defp http_get(path) do
     url = @base_url <> path

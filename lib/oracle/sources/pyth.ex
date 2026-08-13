@@ -64,8 +64,7 @@ defmodule Oracle.Sources.Pyth do
   bytes, the feed id, publish time, Pythnet slot, and confidence
   interval. The provenance shape is intended to be dropped into
   `Oracle.Events.PriceTick.provenance` under `kind: :pyth_vaa` so
-  downstream attestation code has the signed source data to preserve
-  and republish.
+  consumers retain the signed source data for later verification.
 
   ## Returns
 

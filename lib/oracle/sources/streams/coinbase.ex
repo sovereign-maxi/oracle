@@ -125,7 +125,7 @@ defmodule Oracle.Sources.Streams.Coinbase do
 
   def parse_message(%{"type" => "subscriptions"}), do: :ignore
   def parse_message(%{"type" => "heartbeat"}), do: :ignore
-  def parse_message(%{"type" => "error"}), do: :ignore
+  def parse_message(%{"type" => "error"} = msg), do: {:error, {:coinbase_error, msg}}
   def parse_message(_), do: :ignore
 
   @impl true

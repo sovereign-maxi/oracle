@@ -46,6 +46,17 @@ defmodule Oracle.Sources.BitstampTest do
     end
   end
 
+  defmodule ZeroVolumeMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body:
+           ~s({"high":"105000.00","last":"104523.45","timestamp":"1707648000","bid":"104520.00","vwap":"0","volume":"0","low":"104000.00","ask":"104525.00","open":"104200.00"})
+       }}
+    end
+  end
+
   setup do
     Application.put_env(:oracle, :http_client, MockHTTP)
     on_exit(fn -> Application.delete_env(:oracle, :http_client) end)
@@ -107,6 +118,14 @@ defmodule Oracle.Sources.BitstampTest do
       assert Decimal.equal?(ticker.last, Decimal.new("104523.45"))
       assert Decimal.equal?(ticker.high, Decimal.new("105000.00"))
       assert Decimal.equal?(ticker.low, Decimal.new("104000.00"))
+    end
+
+    test "accepts zero volume and vwap on illiquid pairs" do
+      Application.put_env(:oracle, :http_client, ZeroVolumeMockHTTP)
+
+      assert {:ok, ticker} = Bitstamp.fetch_ticker(:btc_usd)
+      assert Decimal.equal?(ticker.volume, Decimal.new("0"))
+      assert Decimal.equal?(ticker.vwap, Decimal.new("0"))
     end
   end
 

@@ -91,6 +91,32 @@ defmodule Oracle.Sources.Streams.KrakenTest do
       assert delta.source == :kraken
     end
 
+    test "parses two-sided book updates (5-element array)" do
+      msg = [
+        0,
+        %{"a" => [["104525.00", "3.0", "1704067201.0"]]},
+        %{"b" => [["104520.00", "1.5", "1704067201.0"]]},
+        "book-10",
+        "XBT/USD"
+      ]
+
+      assert {:ok, [%BookDelta{} = delta]} = Kraken.parse_message(msg)
+      assert delta.source == :kraken
+      assert length(delta.asks) == 1
+      assert length(delta.bids) == 1
+    end
+
+    test "surfaces subscription errors" do
+      msg = %{
+        "event" => "subscriptionStatus",
+        "status" => "error",
+        "errorMessage" => "Unknown pair",
+        "pair" => "XBT/USD"
+      }
+
+      assert {:error, {:subscribe_error, ^msg}} = Kraken.parse_message(msg)
+    end
+
     test "ignores heartbeat" do
       assert :ignore = Kraken.parse_message(%{"event" => "heartbeat"})
     end

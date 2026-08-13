@@ -57,6 +57,10 @@ defmodule Oracle.Sources.Streams.Kraken do
   def parse_message(%{"event" => "heartbeat"}), do: :ignore
   def parse_message(%{"event" => "pong"}), do: :ping
   def parse_message(%{"event" => "systemStatus"}), do: :ignore
+
+  def parse_message(%{"event" => "subscriptionStatus", "status" => "error"} = msg),
+    do: {:error, {:subscribe_error, msg}}
+
   def parse_message(%{"event" => "subscriptionStatus"}), do: :ignore
 
   def parse_message(msg) when is_list(msg) do
@@ -72,6 +76,11 @@ defmodule Oracle.Sources.Streams.Kraken do
 
       [_channel_id, data, "book-10", pair] ->
         parse_book_delta(data, pair)
+
+      # Two-sided updates arrive as [id, %{"a" => ...}, %{"b" => ...}, name, pair]
+      [_channel_id, side_a, side_b, "book-10", pair]
+      when is_map(side_a) and is_map(side_b) ->
+        parse_book_delta(Map.merge(side_a, side_b), pair)
 
       _ ->
         :ignore

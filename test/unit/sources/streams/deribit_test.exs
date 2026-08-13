@@ -1,7 +1,7 @@
 defmodule Oracle.Sources.Streams.DeribitTest do
   use ExUnit.Case, async: true
 
-  alias Oracle.Feeds.{BookDelta, BookSnapshot, Liquidation, Ticker, Trade}
+  alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Liquidation, Ticker, Trade}
   alias Oracle.Sources.Streams.Deribit
 
   describe "name/0" do
@@ -62,7 +62,39 @@ defmodule Oracle.Sources.Streams.DeribitTest do
       assert ticker.source == :deribit
     end
 
-    test "parses trade message" do
+    test "drops tickers without a usable price" do
+      msg = %{
+        "method" => "subscription",
+        "params" => %{
+          "channel" => "ticker.BTC-PERPETUAL.raw",
+          "data" => %{
+            "instrument_name" => "BTC-PERPETUAL",
+            "timestamp" => 1_704_067_200_000
+          }
+        }
+      }
+
+      assert :ignore = Deribit.parse_message(msg)
+    end
+
+    test "keeps funding rate from price-less tickers" do
+      msg = %{
+        "method" => "subscription",
+        "params" => %{
+          "channel" => "ticker.BTC-PERPETUAL.raw",
+          "data" => %{
+            "instrument_name" => "BTC-PERPETUAL",
+            "funding_8h" => 0.0001,
+            "timestamp" => 1_704_067_200_000
+          }
+        }
+      }
+
+      assert {:ok, [%FundingRate{} = fr]} = Deribit.parse_message(msg)
+      assert fr.source == :deribit
+    end
+
+    test "parses trade message, converting USD contract amount to base units" do
       msg = %{
         "method" => "subscription",
         "params" => %{
@@ -71,8 +103,9 @@ defmodule Oracle.Sources.Streams.DeribitTest do
             %{
               "instrument_name" => "BTC-PERPETUAL",
               "trade_id" => "trade_1",
-              "price" => 104_523.45,
-              "amount" => 0.5,
+              "price" => 100_000.0,
+              # Perpetual trade amounts are USD contracts on Deribit
+              "amount" => 50_000.0,
               "direction" => "buy",
               "timestamp" => 1_704_067_200_000
             }
@@ -83,9 +116,10 @@ defmodule Oracle.Sources.Streams.DeribitTest do
       assert {:ok, [%Trade{} = trade]} = Deribit.parse_message(msg)
       assert trade.source == :deribit
       assert trade.side == :buy
+      assert Decimal.equal?(trade.quantity, Decimal.new("0.5"))
     end
 
-    test "parses book snapshot" do
+    test "parses book snapshot with bare [price, amount] levels" do
       msg = %{
         "method" => "subscription",
         "params" => %{
@@ -93,8 +127,9 @@ defmodule Oracle.Sources.Streams.DeribitTest do
           "data" => %{
             "type" => "snapshot",
             "instrument_name" => "BTC-PERPETUAL",
-            "bids" => [["new", 104_520.00, 2.5]],
-            "asks" => [["new", 104_525.00, 1.8]],
+            # Snapshot levels are bare [price, amount] pairs (no action tag)
+            "bids" => [[104_520.00, 2.5]],
+            "asks" => [[104_525.00, 1.8]],
             "change_id" => 100,
             "timestamp" => 1_704_067_200_000
           }
@@ -104,6 +139,10 @@ defmodule Oracle.Sources.Streams.DeribitTest do
       assert {:ok, [%BookSnapshot{} = snapshot]} = Deribit.parse_message(msg)
       assert snapshot.source == :deribit
       assert snapshot.sequence == 100
+      assert [{bid_price, _}] = snapshot.bids
+      assert Decimal.equal?(bid_price, Decimal.new("104520.0"))
+      assert [{ask_price, _}] = snapshot.asks
+      assert Decimal.equal?(ask_price, Decimal.new("104525.0"))
     end
 
     test "parses book delta" do
@@ -128,7 +167,7 @@ defmodule Oracle.Sources.Streams.DeribitTest do
       assert delta.last_sequence == 101
     end
 
-    test "parses liquidation message" do
+    test "parses liquidation message, converting USD contract amount to base units" do
       msg = %{
         "method" => "subscription",
         "params" => %{
@@ -136,8 +175,8 @@ defmodule Oracle.Sources.Streams.DeribitTest do
           "data" => [
             %{
               "instrument_name" => "BTC-PERPETUAL",
-              "price" => 103_500.00,
-              "amount" => 0.25,
+              "price" => 100_000.0,
+              "amount" => 25_000.0,
               "direction" => "sell",
               "timestamp" => 1_704_067_200_000
             }
@@ -148,6 +187,7 @@ defmodule Oracle.Sources.Streams.DeribitTest do
       assert {:ok, [%Liquidation{} = liq]} = Deribit.parse_message(msg)
       assert liq.source == :deribit
       assert liq.side == :sell
+      assert Decimal.equal?(liq.quantity, Decimal.new("0.25"))
     end
 
     test "ignores RPC results" do

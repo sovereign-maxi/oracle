@@ -3,9 +3,9 @@ defmodule Oracle.Sources.TwelveData do
   Twelve Data price source — WebSocket-primary, REST fallback.
 
   This façade implements the same `Oracle.Sources.Source` behaviour
-  as the other REST-poll sources so the Watchdog can call
-  `fetch_price/1` on its normal tick cadence without knowing that
-  Twelve Data is push-based.
+  as the other REST-poll sources so callers can invoke `fetch_price/1`
+  on their normal tick cadence without knowing that Twelve Data is
+  push-based.
 
   ## Read path
 
@@ -13,7 +13,7 @@ defmodule Oracle.Sources.TwelveData do
 
     1. Try `Oracle.Streams.Cache.latest(:twelve_data, pair)`. If the
        runner GenServer has a fresh WebSocket tick, return it — this
-       is the happy path and adds ~microseconds to a Watchdog cycle.
+       is the happy path and adds ~microseconds to a caller's cycle.
     2. If the cache is empty or stale, fall back to a REST GET
        against `/quote`. This handles cold-start (before the WS has
        delivered its first tick), server-side WS closes we haven't

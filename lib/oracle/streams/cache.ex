@@ -4,10 +4,9 @@ defmodule Oracle.Streams.Cache do
 
   A runner GenServer that owns a Mint.WebSocket connection to a
   streaming vendor writes each parsed `%Oracle.Feeds.Ticker{}` here.
-  The REST-shaped `Oracle.Sources.*` façades (which the Watchdog
-  polls on its normal tick cadence) read from here instead of hitting
-  the vendor's HTTP endpoint — turning "poll" into "read whatever the
-  push-feed last delivered".
+  The REST-shaped `Oracle.Sources.*` façades read from here instead
+  of hitting the vendor's HTTP endpoint — turning "poll" into "read
+  whatever the push-feed last delivered".
 
   Keyed on `{source, pair}`. Value is `{%Ticker{}, written_at_ms}`.
 
@@ -16,6 +15,10 @@ defmodule Oracle.Streams.Cache do
   in the same node can write; the readers are all in-process (no
   cross-node semantics needed — the streaming subscription is
   per-node).
+
+  The table is owned by whichever process creates it first. Call
+  `ensure_table/0` once from a long-lived process at application boot
+  so the table outlives individual connection processes.
   """
 
   alias Oracle.Feeds.Ticker
@@ -69,7 +72,12 @@ defmodule Oracle.Streams.Cache do
   def ensure_table do
     case :ets.whereis(@table) do
       :undefined ->
-        :ets.new(@table, [:set, :public, :named_table, {:read_concurrency, true}])
+        # Race-tolerant creation: a concurrent first writer may win.
+        try do
+          :ets.new(@table, [:set, :public, :named_table, {:read_concurrency, true}])
+        rescue
+          ArgumentError -> :ok
+        end
 
       _ ->
         :ok

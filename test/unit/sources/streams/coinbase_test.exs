@@ -108,6 +108,12 @@ defmodule Oracle.Sources.Streams.CoinbaseTest do
     test "ignores subscriptions" do
       assert :ignore = Coinbase.parse_message(%{"type" => "subscriptions"})
     end
+
+    test "surfaces error frames" do
+      msg = %{"type" => "error", "message" => "Failed to subscribe"}
+
+      assert {:error, {:coinbase_error, ^msg}} = Coinbase.parse_message(msg)
+    end
   end
 
   describe "supported_feeds/0" do

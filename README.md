@@ -2,6 +2,8 @@
 
 Stateless price feed primitives: fetching, aggregation, derived price calculation, and technical indicators.
 
+Source: [github.com/sovereign-maxi/oracle](https://github.com/sovereign-maxi/oracle)
+
 ## Installation
 
 Add `oracle` to your dependencies in `mix.exs`:
@@ -64,23 +66,26 @@ end
 | Module | Purpose |
 |--------|---------|
 | `Oracle.Sources.Binance` | Binance API adapter |
-| `Oracle.Sources.Coinbase` | Coinbase API adapter |
-| `Oracle.Sources.Kraken` | Kraken API adapter |
 | `Oracle.Sources.Bitstamp` | Bitstamp API adapter |
+| `Oracle.Sources.Coinbase` | Coinbase API adapter |
 | `Oracle.Sources.Gemini` | Gemini API adapter |
+| `Oracle.Sources.Kraken` | Kraken API adapter |
 | `Oracle.Sources.KuCoin` | KuCoin API adapter |
+| `Oracle.Sources.Pyth` | Pyth Hermes adapter (VAA-signed prices) |
+| `Oracle.Sources.TwelveData` | Twelve Data adapter (US equities, FX, indices) |
 | `Oracle.Sources.Yahoo` | Yahoo Finance adapter (commodities, indices, forex) |
 
 ### Stream Adapters
 
 | Module | Purpose |
 |--------|---------|
-| `Oracle.Sources.BinanceStream` | Binance WebSocket adapter |
-| `Oracle.Sources.CoinbaseStream` | Coinbase WebSocket adapter |
-| `Oracle.Sources.KrakenStream` | Kraken WebSocket adapter |
-| `Oracle.Sources.BybitStream` | Bybit WebSocket adapter |
-| `Oracle.Sources.DeribitStream` | Deribit WebSocket adapter |
-| `Oracle.Sources.OkxStream` | OKX WebSocket adapter |
+| `Oracle.Sources.Streams.Binance` | Binance WebSocket adapter |
+| `Oracle.Sources.Streams.Bybit` | Bybit WebSocket adapter |
+| `Oracle.Sources.Streams.Coinbase` | Coinbase WebSocket adapter |
+| `Oracle.Sources.Streams.Deribit` | Deribit WebSocket adapter |
+| `Oracle.Sources.Streams.Kraken` | Kraken WebSocket adapter |
+| `Oracle.Sources.Streams.Okx` | OKX WebSocket adapter |
+| `Oracle.Sources.Streams.TwelveData` | Twelve Data WebSocket adapter |
 
 ## Usage
 
@@ -292,4 +297,4 @@ end
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

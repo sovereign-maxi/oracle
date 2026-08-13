@@ -43,6 +43,60 @@ defmodule Oracle.Sources.BinanceTest do
     end
   end
 
+  defmodule StatsMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body:
+           ~s({"symbol":"BTCUSDT","lastPrice":"104523.45","priceChange":"-1200.50","priceChangePercent":"-1.135","openPrice":"105723.95","highPrice":"106000.00","lowPrice":"102000.00","volume":"28432.521"})
+       }}
+    end
+  end
+
+  defmodule BadStatsMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body:
+           ~s({"symbol":"BTCUSDT","lastPrice":"","priceChange":"-1.0","priceChangePercent":"-1.0","openPrice":"100.0","highPrice":"100.0","lowPrice":"99.0","volume":"10.0"})
+       }}
+    end
+  end
+
+  defmodule KlinesMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body:
+           ~s([[1704067200000,"100.0","101.0","99.5","100.5","12.34",1704067259999,"0",10,"0","0","0"]])
+       }}
+    end
+  end
+
+  defmodule BadKlinesMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body:
+           ~s([[1704067200000,"","101.0","99.5","100.5","12.34",1704067259999,"0",10,"0","0","0"]])
+       }}
+    end
+  end
+
+  defmodule MultiSymbolMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body: ~s([{"symbol":"PAXGUSDT","price":"2450.10"},{"symbol":"MSTRBUSDT","price":"95.44"}])
+       }}
+    end
+  end
+
   setup do
     # Configure mock HTTP client
     Application.put_env(:oracle, :http_client, MockHTTP)
@@ -96,6 +150,47 @@ defmodule Oracle.Sources.BinanceTest do
       assert Map.has_key?(prices, :btc_usdt)
       assert Map.has_key?(prices, :eth_usdt)
       assert Decimal.equal?(prices[:btc_usdt], Decimal.new("104523.45"))
+    end
+
+    test "maps tokenized-stock and gold symbols back to pairs" do
+      Application.put_env(:oracle, :http_client, MultiSymbolMockHTTP)
+
+      assert {:ok, prices} = Binance.fetch_prices([:xau_usd, :mstrbusdt])
+      assert Decimal.equal?(prices[:xau_usd], Decimal.new("2450.10"))
+      assert Decimal.equal?(prices[:mstrbusdt], Decimal.new("95.44"))
+    end
+  end
+
+  describe "fetch_24h_stats/1" do
+    test "parses stats with full-precision fractional volume" do
+      Application.put_env(:oracle, :http_client, StatsMockHTTP)
+
+      assert {:ok, stats} = Binance.fetch_24h_stats(:btc_usdt)
+      assert Decimal.equal?(stats.price, Decimal.new("104523.45"))
+      assert Decimal.equal?(stats.change, Decimal.new("-1200.50"))
+      assert Decimal.equal?(stats.volume_24h, Decimal.new("28432.521"))
+    end
+
+    test "malformed fields fail the call instead of emitting zeros" do
+      Application.put_env(:oracle, :http_client, BadStatsMockHTTP)
+
+      assert {:error, :invalid_stats_data} = Binance.fetch_24h_stats(:btc_usdt)
+    end
+  end
+
+  describe "fetch_klines/2" do
+    test "parses klines with full-precision fractional volume" do
+      Application.put_env(:oracle, :http_client, KlinesMockHTTP)
+
+      assert {:ok, [kline]} = Binance.fetch_klines(:btc_usdt)
+      assert Decimal.equal?(kline.close, Decimal.new("100.5"))
+      assert Decimal.equal?(kline.volume, Decimal.new("12.34"))
+    end
+
+    test "malformed klines fail the call instead of emitting zeros" do
+      Application.put_env(:oracle, :http_client, BadKlinesMockHTTP)
+
+      assert {:error, :invalid_kline_data} = Binance.fetch_klines(:btc_usdt)
     end
   end
 end

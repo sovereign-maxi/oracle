@@ -60,8 +60,7 @@ defmodule Oracle.Aggregator do
 
   On rejection, emits `[:oracle, :aggregator, :rejected]` with
   measurements `%{count: 1}` and metadata
-  `%{reason: :zero | :max_swing_exceeded | ...}`. The Watchdog
-  attaches to this event to feed the operator alert surface.
+  `%{reason: :zero | :max_swing_exceeded | ...}`.
   """
   @spec aggregate([PriceTick.t()], map()) :: {:ok, [struct()]} | {:error, atom(), list()}
   def aggregate(ticks, config \\ %{strategy: :median, min_sources: 2})
@@ -169,8 +168,8 @@ defmodule Oracle.Aggregator do
       %{reason: reason, pair: pair}
     )
   rescue
-    # :telemetry may not be installed in every consumer of the substrate
-    # oracle library. Swallow rather than crash the aggregation.
+    # :telemetry may not be installed in every consumer. Swallow rather
+    # than crash the aggregation.
     _ -> :ok
   end
 
@@ -214,9 +213,9 @@ defmodule Oracle.Aggregator do
   # Preserve per-tick provenance in aggregation output. If every tick lacks
   # provenance the returned aggregation has `nil` (indistinguishable from an
   # unsigned-feed aggregation). Any tick carrying provenance flips the list on
-  # for the whole aggregation so downstream attestation code sees the full
-  # per-source slice, using `:absent` as a placeholder for un-signed sources
-  # (kept ordering-aligned with `sources`).
+  # for the whole aggregation so consumers see the full per-source slice,
+  # using `:absent` as a placeholder for un-signed sources (kept
+  # ordering-aligned with `sources`).
   defp preserve_provenances(ticks) do
     any_present? = Enum.any?(ticks, &(&1.provenance != nil))
 
@@ -285,7 +284,13 @@ defmodule Oracle.Aggregator do
   """
   @spec vwap([PriceTick.t()]) :: Decimal.t()
   def vwap(ticks) do
-    ticks_with_volume = Enum.filter(ticks, &(&1.volume != nil))
+    # Only non-negative integer volumes are usable weights (the PriceTick
+    # contract). Anything else is excluded rather than crashing the
+    # aggregation or skewing it with a bad weight.
+    ticks_with_volume =
+      Enum.filter(ticks, fn tick ->
+        is_integer(tick.volume) and tick.volume >= 0
+      end)
 
     if Enum.empty?(ticks_with_volume) do
       mean(Enum.map(ticks, & &1.price))

@@ -134,6 +134,58 @@ defmodule Oracle.BookTest do
       assert {:ok, updated} = Book.apply_delta(book, delta)
       assert updated.sequence == 105
     end
+
+    test "overlapping delta (snapshot handoff) still applies" do
+      book = Book.from_snapshot(sample_snapshot())
+
+      delta = %BookDelta{
+        source: :binance,
+        pair: :btc_usdt,
+        bids: [{d("104520"), d("5.0")}],
+        asks: [],
+        first_sequence: 99,
+        last_sequence: 101,
+        timestamp: DateTime.utc_now()
+      }
+
+      assert {:ok, updated} = Book.apply_delta(book, delta)
+      assert updated.sequence == 101
+      {_, qty} = List.first(updated.bids)
+      assert Decimal.equal?(qty, d("5.0"))
+    end
+
+    test "fully-stale delta is a no-op — levels and sequence untouched" do
+      book = Book.from_snapshot(sample_snapshot())
+
+      delta = %BookDelta{
+        source: :binance,
+        pair: :btc_usdt,
+        bids: [{d("104520"), d("99.0")}],
+        asks: [],
+        first_sequence: 95,
+        last_sequence: 99,
+        timestamp: DateTime.utc_now()
+      }
+
+      assert {:ok, ^book} = Book.apply_delta(book, delta)
+    end
+
+    test "stale delta at the current sequence does not regress the sequence" do
+      book = Book.from_snapshot(sample_snapshot())
+
+      delta = %BookDelta{
+        source: :binance,
+        pair: :btc_usdt,
+        bids: [],
+        asks: [],
+        first_sequence: 90,
+        last_sequence: 100,
+        timestamp: DateTime.utc_now()
+      }
+
+      assert {:ok, updated} = Book.apply_delta(book, delta)
+      assert updated.sequence == 100
+    end
   end
 
   describe "truncate/2" do

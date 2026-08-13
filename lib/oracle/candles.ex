@@ -137,6 +137,11 @@ defmodule Oracle.Candles do
         updated_event = candle_updated_event(pair, timeframe, new_candle, now)
 
         {:ok, [closed_event, updated_event], new_candle}
+
+      %{time: old_time} when old_time > candle_time ->
+        # Out-of-order tick (reconnect replay, multi-source merge): the
+        # period it belongs to is already closed. Ignore it.
+        {:ok, [], current_candle}
     end
   end
 

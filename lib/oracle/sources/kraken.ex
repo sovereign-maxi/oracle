@@ -118,7 +118,7 @@ defmodule Oracle.Sources.Kraken do
     with {:ok, ask_d} <- safe_decimal(ask),
          {:ok, bid_d} <- safe_decimal(bid),
          {:ok, last_d} <- safe_decimal(last),
-         {:ok, vol_d} <- safe_decimal(vol) do
+         {:ok, vol_d} <- non_negative_decimal(vol) do
       {:ok, %{ask: ask_d, bid: bid_d, last: last_d, volume_24h: vol_d}}
     else
       {:error, reason} -> {:error, {:invalid_ticker_data, reason}}
@@ -165,6 +165,25 @@ defmodule Oracle.Sources.Kraken do
   end
 
   defp safe_decimal(value), do: {:error, {:invalid_price, value}}
+
+  # Volume can legitimately be "0" on an illiquid pair — accept zero,
+  # reject anything else invalid.
+  defp non_negative_decimal(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {decimal, ""} ->
+        if Decimal.negative?(decimal),
+          do: {:error, {:invalid_volume, :negative}},
+          else: {:ok, decimal}
+
+      _ ->
+        {:error, {:invalid_volume, value}}
+    end
+  end
+
+  defp non_negative_decimal(value) when is_number(value) and value >= 0,
+    do: {:ok, Decimal.new("#{value}")}
+
+  defp non_negative_decimal(_), do: {:error, :invalid_volume}
 
   # Kraken uses XBT for Bitcoin and has specific pair naming
   defp pair_to_symbol(:btc_usd), do: {"XBTUSD", "XXBTZUSD"}

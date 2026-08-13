@@ -52,29 +52,44 @@ defmodule Oracle.Book do
 
   Returns `{:error, :sequence_gap}` if the delta's first_sequence
   doesn't follow the book's current sequence.
+
+  A fully-stale delta (`last_sequence <= book.sequence`) is a no-op:
+  every update in it is already reflected in the book, and applying it
+  would resurrect removed levels and regress the sequence.
   """
   @spec apply_delta(book(), BookDelta.t()) :: {:ok, book()} | {:error, :sequence_gap}
   def apply_delta(book, %BookDelta{} = delta) do
-    if valid_sequence?(book, delta) do
-      updated_bids =
-        book.bids
-        |> apply_updates(delta.bids)
-        |> sort_bids()
+    cond do
+      stale_delta?(book, delta) ->
+        {:ok, book}
 
-      updated_asks =
-        book.asks
-        |> apply_updates(delta.asks)
-        |> sort_asks()
+      valid_sequence?(book, delta) ->
+        updated_bids =
+          book.bids
+          |> apply_updates(delta.bids)
+          |> sort_bids()
 
-      {:ok,
-       %{
-         bids: updated_bids,
-         asks: updated_asks,
-         sequence: delta.last_sequence || book.sequence
-       }}
-    else
-      {:error, :sequence_gap}
+        updated_asks =
+          book.asks
+          |> apply_updates(delta.asks)
+          |> sort_asks()
+
+        {:ok,
+         %{
+           bids: updated_bids,
+           asks: updated_asks,
+           sequence: delta.last_sequence || book.sequence
+         }}
+
+      true ->
+        {:error, :sequence_gap}
     end
+  end
+
+  defp stale_delta?(book, delta) do
+    not is_nil(book.sequence) and
+      not is_nil(delta.last_sequence) and
+      delta.last_sequence <= book.sequence
   end
 
   @doc """

@@ -67,8 +67,8 @@ defmodule Oracle.Sources.Bitstamp do
              {:ok, high} <- safe_decimal(ticker["high"]),
              {:ok, low} <- safe_decimal(ticker["low"]),
              {:ok, open} <- safe_decimal(ticker["open"]),
-             {:ok, volume} <- safe_decimal(ticker["volume"]),
-             {:ok, vwap} <- safe_decimal(ticker["vwap"]),
+             {:ok, volume} <- non_negative_decimal(ticker["volume"]),
+             {:ok, vwap} <- non_negative_decimal(ticker["vwap"]),
              {:ok, bid} <- safe_decimal(ticker["bid"]),
              {:ok, ask} <- safe_decimal(ticker["ask"]),
              {:ok, timestamp} <- safe_timestamp(ticker["timestamp"]) do
@@ -170,6 +170,25 @@ defmodule Oracle.Sources.Bitstamp do
   end
 
   defp safe_decimal(value), do: {:error, {:invalid_price, value}}
+
+  # Volume / vwap can legitimately be "0" on an illiquid pair — accept
+  # zero, reject anything else invalid.
+  defp non_negative_decimal(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {decimal, ""} ->
+        if Decimal.negative?(decimal),
+          do: {:error, {:invalid_decimal, :negative}},
+          else: {:ok, decimal}
+
+      _ ->
+        {:error, {:invalid_decimal, value}}
+    end
+  end
+
+  defp non_negative_decimal(value) when is_number(value) and value >= 0,
+    do: {:ok, Decimal.new("#{value}")}
+
+  defp non_negative_decimal(_), do: {:error, :invalid_value}
 
   defp safe_timestamp(nil), do: {:error, :missing_timestamp}
 

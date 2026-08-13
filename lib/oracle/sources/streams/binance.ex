@@ -12,15 +12,24 @@ defmodule Oracle.Sources.Streams.Binance do
 
   - `:ticker` - 24hr mini ticker
   - `:trades` - Real-time trade executions
-  - `:book` - Depth updates (diff)
-  - `:liquidations` - Forced liquidation orders (futures)
+  - `:liquidations` - Forced liquidation orders (futures only)
+
+  ## Liquidations live on the futures endpoint
+
+  `@forceOrder` streams exist only on `fstream.binance.com`. A channel
+  list containing `:liquidations` is therefore routed to the futures
+  base URL — and must not be mixed with spot feeds (`:ticker`,
+  `:book_ticker`, `:trades`) on the same connection, since those would
+  then deliver futures prices. Subscribe liquidations on their own
+  connection.
   """
 
   @behaviour Oracle.Sources.Streams
 
-  alias Oracle.Feeds.{BookDelta, Liquidation, Ticker, Trade}
+  alias Oracle.Feeds.{Liquidation, Ticker, Trade}
 
-  @ws_base "wss://stream.binance.com:9443/stream"
+  @ws_base_spot "wss://stream.binance.com:9443/stream"
+  @ws_base_futures "wss://fstream.binance.com/stream"
 
   @impl true
   def name, do: :binance
@@ -28,7 +37,7 @@ defmodule Oracle.Sources.Streams.Binance do
   @impl true
   def ws_url(channels) do
     streams = Enum.map_join(channels, "/", &channel_to_stream/1)
-    "#{@ws_base}?streams=#{streams}"
+    "#{ws_base(channels)}?streams=#{streams}"
   end
 
   @impl true
@@ -43,7 +52,6 @@ defmodule Oracle.Sources.Streams.Binance do
       String.ends_with?(stream, "@miniTicker") -> parse_ticker(data)
       String.ends_with?(stream, "@bookTicker") -> parse_book_ticker(data)
       String.ends_with?(stream, "@trade") -> parse_trade(data)
-      String.ends_with?(stream, "@depth") -> parse_depth(data)
       String.ends_with?(stream, "@forceOrder") -> parse_liquidation(data)
       true -> :ignore
     end
@@ -57,11 +65,30 @@ defmodule Oracle.Sources.Streams.Binance do
   def ping_config, do: nil
 
   @impl true
-  def supported_feeds, do: [:ticker, :book_ticker, :trades, :book, :liquidations]
+  def supported_feeds, do: [:ticker, :book_ticker, :trades, :liquidations]
 
   # ─────────────────────────────────────────────────────────────
   # Private Functions
   # ─────────────────────────────────────────────────────────────
+
+  # `@forceOrder` exists only on the futures endpoint; spot streams only
+  # on the spot endpoint. Mixing them on one connection cannot work.
+  defp ws_base(channels) do
+    liquidation? = fn %{feed: feed} -> feed == :liquidations end
+
+    cond do
+      Enum.all?(channels, liquidation?) ->
+        @ws_base_futures
+
+      Enum.any?(channels, liquidation?) ->
+        raise ArgumentError,
+              ":liquidations channels use the Binance futures endpoint and must " <>
+                "be subscribed on their own connection (got a mixed channel list)"
+
+      true ->
+        @ws_base_spot
+    end
+  end
 
   defp channel_to_stream(%{feed: :ticker, pair: pair}) do
     "#{pair_to_symbol(pair)}@miniTicker"
@@ -73,10 +100,6 @@ defmodule Oracle.Sources.Streams.Binance do
 
   defp channel_to_stream(%{feed: :trades, pair: pair}) do
     "#{pair_to_symbol(pair)}@trade"
-  end
-
-  defp channel_to_stream(%{feed: :book, pair: pair}) do
-    "#{pair_to_symbol(pair)}@depth@100ms"
   end
 
   defp channel_to_stream(%{feed: :liquidations, pair: pair}) do
@@ -161,26 +184,10 @@ defmodule Oracle.Sources.Streams.Binance do
     end
   end
 
-  defp parse_depth(data) do
-    bids = parse_levels(data["b"])
-    asks = parse_levels(data["a"])
-
-    {:ok,
-     [
-       %BookDelta{
-         source: :binance,
-         pair: symbol_to_pair(data["s"]),
-         bids: bids,
-         asks: asks,
-         first_sequence: data["U"],
-         last_sequence: data["u"],
-         timestamp: event_time(data["E"])
-       }
-     ]}
-  end
-
   defp parse_liquidation(%{"o" => order}) do
-    with {:ok, price} <- safe_decimal(order["p"]),
+    # `ap` is the average fill price; the order price `p` can be "0" on
+    # market-style liquidation orders and must never be emitted.
+    with {:ok, price} <- positive_decimal(order["ap"]),
          {:ok, qty} <- safe_decimal(order["q"]) do
       side = if order["S"] == "BUY", do: :buy, else: :sell
 
@@ -202,26 +209,18 @@ defmodule Oracle.Sources.Streams.Binance do
 
   defp parse_liquidation(_), do: :ignore
 
-  defp parse_levels(levels) when is_list(levels) do
-    Enum.flat_map(levels, fn
-      [price_str, qty_str] ->
-        with {:ok, price} <- safe_decimal(price_str),
-             {:ok, qty} <- safe_decimal_or_zero(qty_str) do
-          [{price, qty}]
-        else
-          _ -> []
-        end
-
-      _ ->
-        []
-    end)
-  end
-
-  defp parse_levels(_), do: []
-
   defp pair_to_symbol(pair) do
     pair |> Atom.to_string() |> String.downcase() |> String.replace("_", "")
   end
+
+  # Map the wire symbol back to pair atoms (same convention as the REST
+  # Binance adapter). Unknown symbols fall back to a downcased atom.
+  defp symbol_to_pair("BTCUSDT"), do: :btc_usdt
+  defp symbol_to_pair("ETHUSDT"), do: :eth_usdt
+  defp symbol_to_pair("BTCEUR"), do: :btc_eur
+  defp symbol_to_pair("ETHBTC"), do: :eth_btc
+  defp symbol_to_pair("PAXGUSDT"), do: :xau_usd
+  defp symbol_to_pair("MSTRBUSDT"), do: :mstrbusdt
 
   defp symbol_to_pair(symbol) when is_binary(symbol) do
     String.to_existing_atom(String.downcase(symbol))
@@ -253,10 +252,13 @@ defmodule Oracle.Sources.Streams.Binance do
   defp safe_decimal(value) when is_number(value), do: {:ok, Decimal.new("#{value}")}
   defp safe_decimal(_), do: {:error, :invalid_value}
 
-  defp safe_decimal_or_zero(value) do
+  defp positive_decimal(value) do
     case safe_decimal(value) do
-      {:ok, _} = ok -> ok
-      _ -> {:ok, Decimal.new(0)}
+      {:ok, decimal} ->
+        if Decimal.positive?(decimal), do: {:ok, decimal}, else: {:error, :non_positive}
+
+      error ->
+        error
     end
   end
 end

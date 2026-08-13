@@ -62,6 +62,17 @@ defmodule Oracle.Sources.KrakenTest do
     end
   end
 
+  defmodule ZeroVolumeMockHTTP do
+    def get(_url, _headers, _opts) do
+      {:ok,
+       %{
+         status_code: 200,
+         body:
+           ~s({"error":[],"result":{"XXBTZUSD":{"c":["104523.45","0.123"],"a":["104525.00","1"],"b":["104520.00","1"],"v":["0","0"]}}})
+       }}
+    end
+  end
+
   setup do
     Application.put_env(:oracle, :http_client, MockHTTP)
     on_exit(fn -> Application.delete_env(:oracle, :http_client) end)
@@ -119,6 +130,13 @@ defmodule Oracle.Sources.KrakenTest do
       assert Decimal.equal?(ticker.last, Decimal.new("104523.45"))
       assert Decimal.equal?(ticker.ask, Decimal.new("104525.00"))
       assert Decimal.equal?(ticker.bid, Decimal.new("104520.00"))
+    end
+
+    test "accepts zero volume on illiquid pairs" do
+      Application.put_env(:oracle, :http_client, ZeroVolumeMockHTTP)
+
+      assert {:ok, ticker} = Kraken.fetch_ticker(:btc_usd)
+      assert Decimal.equal?(ticker.volume_24h, Decimal.new("0"))
     end
   end
 

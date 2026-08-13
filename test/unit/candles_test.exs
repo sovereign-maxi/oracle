@@ -101,6 +101,15 @@ defmodule Oracle.CandlesTest do
       assert event.volume == 0
       assert candle.volume == 0
     end
+
+    test "ignores out-of-order ticks from closed periods" do
+      timestamp = 1_704_067_200
+      {:ok, _, candle} = Candles.process_tick(:btc_usd, :"1m", nil, 100.0, timestamp, 10)
+
+      # Tick from the previous minute arrives late (reconnect replay)
+      assert {:ok, [], ^candle} =
+               Candles.process_tick(:btc_usd, :"1m", candle, 95.0, timestamp - 30, 5)
+    end
   end
 
   describe "update_candle/4" do

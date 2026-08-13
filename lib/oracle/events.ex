@@ -107,9 +107,8 @@ defmodule Oracle.Events do
     - `provenances` - Optional list of per-source provenance blobs preserved
       from the input `PriceTick`s. Same length and ordering as `sources` when
       present. `nil` on aggregations from unsigned feeds. Consumers that need
-      to attest to an aggregation (e.g. downstream settlement or barrier
-      attestations) preserve these end-to-end so the raw signed data can be
-      republished for independent verification.
+      to attest to an aggregation preserve these end-to-end so the raw signed
+      data can be republished for independent verification.
     - `version` - Event schema version
     """
     @type t :: %__MODULE__{

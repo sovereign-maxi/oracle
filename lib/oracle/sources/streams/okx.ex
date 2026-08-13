@@ -69,7 +69,7 @@ defmodule Oracle.Sources.Streams.Okx do
 
   def parse_message(%{"event" => "subscribe"}), do: :ignore
   def parse_message(%{"event" => "unsubscribe"}), do: :ignore
-  def parse_message(%{"event" => "error"}), do: :ignore
+  def parse_message(%{"event" => "error"} = msg), do: {:error, {:okx_error, msg}}
   def parse_message(%{"op" => "pong"}), do: :ping
   def parse_message(_), do: :ignore
 
@@ -108,20 +108,27 @@ defmodule Oracle.Sources.Streams.Okx do
   defp parse_tickers(data) do
     tickers =
       Enum.flat_map(data, fn item ->
-        [
-          %Ticker{
-            source: :okx,
-            pair: inst_to_pair(item["instId"]),
-            price: parse_decimal(item["last"]),
-            bid: parse_decimal(item["bidPx"]),
-            ask: parse_decimal(item["askPx"]),
-            volume_24h: parse_decimal(item["vol24h"]),
-            change_24h: nil,
-            high_24h: parse_decimal(item["high24h"]),
-            low_24h: parse_decimal(item["low24h"]),
-            timestamp: event_time(item["ts"])
-          }
-        ]
+        case positive_decimal(item["last"]) do
+          {:ok, price} ->
+            [
+              %Ticker{
+                source: :okx,
+                pair: inst_to_pair(item["instId"]),
+                price: price,
+                bid: parse_decimal(item["bidPx"]),
+                ask: parse_decimal(item["askPx"]),
+                volume_24h: parse_decimal(item["vol24h"]),
+                change_24h: nil,
+                high_24h: parse_decimal(item["high24h"]),
+                low_24h: parse_decimal(item["low24h"]),
+                timestamp: event_time(item["ts"])
+              }
+            ]
+
+          {:error, _} ->
+            # No usable price — never emit a partial ticker.
+            []
+        end
       end)
 
     {:ok, tickers}
@@ -265,12 +272,16 @@ defmodule Oracle.Sources.Streams.Okx do
   defp pair_to_inst(:eth_usdt), do: "ETH-USDT-SWAP"
   defp pair_to_inst(:btc_usd), do: "BTC-USD-SWAP"
 
-  # OKX tokenized-stock spot products carry an `X` prefix (XMSTR,
-  # XNVDA, XAAPL, etc.). They're SPOT instruments, not swaps —
-  # instId omits the `-SWAP` suffix.
+  # OKX tokenized-stock products are SPOT instruments — the instId omits
+  # the `-SWAP` suffix. Listed explicitly: a prefix heuristic would
+  # misroute any X* swap pair (e.g. XRP-USDT) to the spot book.
+  defp pair_to_inst(:xmstr_usdt), do: "XMSTR-USDT"
+  defp pair_to_inst(:xnvda_usdt), do: "XNVDA-USDT"
+  defp pair_to_inst(:xaapl_usdt), do: "XAAPL-USDT"
+
   defp pair_to_inst(pair) when is_atom(pair) do
     str = pair |> Atom.to_string() |> String.upcase() |> String.replace("_", "-")
-    if String.starts_with?(str, "X"), do: str, else: str <> "-SWAP"
+    str <> "-SWAP"
   end
 
   defp inst_to_pair(inst_id) when is_binary(inst_id) do
@@ -337,6 +348,16 @@ defmodule Oracle.Sources.Streams.Okx do
 
   defp safe_decimal(value) when is_number(value), do: {:ok, Decimal.new("#{value}")}
   defp safe_decimal(_), do: {:error, :invalid_value}
+
+  defp positive_decimal(value) do
+    case parse_decimal(value) do
+      %Decimal{} = decimal ->
+        if Decimal.positive?(decimal), do: {:ok, decimal}, else: {:error, :non_positive}
+
+      _ ->
+        {:error, :invalid_decimal}
+    end
+  end
 
   defp safe_decimal_or_zero(value) do
     case safe_decimal(value) do

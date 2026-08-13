@@ -15,6 +15,13 @@ defmodule Oracle.Sources.Streams.Bybit do
   - `:book` - Order book snapshots and deltas
   - `:liquidations` - Forced liquidations
   - `:funding_rate` - Perpetual futures funding rates
+
+  ## Ticker frames are deltas
+
+  v5 linear tickers push a full snapshot first and delta updates after —
+  a delta carries only changed fields, so `lastPrice` is often absent.
+  Frames without a usable price are dropped here; a partial ticker with
+  a nil price is never emitted downstream.
   """
 
   @behaviour Oracle.Sources.Streams
@@ -44,10 +51,11 @@ defmodule Oracle.Sources.Streams.Bybit do
   end
 
   @impl true
-  def parse_message(%{"topic" => topic, "type" => type, "data" => data}) do
+  def parse_message(%{"topic" => topic, "type" => type, "data" => data} = msg) do
     cond do
       String.starts_with?(topic, "tickers.") ->
-        parse_ticker(data)
+        # v5 carries the event time at the frame top level, not in `data`
+        parse_ticker(data, msg["ts"])
 
       String.starts_with?(topic, "publicTrade.") ->
         parse_trades(data)
@@ -70,6 +78,10 @@ defmodule Oracle.Sources.Streams.Bybit do
   end
 
   def parse_message(%{"op" => "pong"}), do: :ping
+
+  def parse_message(%{"op" => "subscribe", "success" => false} = msg),
+    do: {:error, {:subscribe_error, msg}}
+
   def parse_message(%{"op" => "subscribe"}), do: :ignore
   def parse_message(%{"success" => true}), do: :ignore
   def parse_message(_), do: :ignore
@@ -95,43 +107,57 @@ defmodule Oracle.Sources.Streams.Bybit do
 
   defp channel_to_topic(%{feed: :funding_rate, pair: pair}), do: "tickers.#{pair_to_symbol(pair)}"
 
-  defp parse_ticker(data) when is_map(data) do
+  defp parse_ticker(data, frame_ts) when is_map(data) do
     pair = symbol_to_pair(data["symbol"])
 
-    ticker = %Ticker{
-      source: :bybit,
-      pair: pair,
-      price: parse_decimal(data["lastPrice"]),
-      bid: parse_decimal(data["bid1Price"]),
-      ask: parse_decimal(data["ask1Price"]),
-      volume_24h: parse_decimal(data["volume24h"]),
-      change_24h: parse_decimal(data["price24hPcnt"]),
-      high_24h: parse_decimal(data["highPrice24h"]),
-      low_24h: parse_decimal(data["lowPrice24h"]),
-      timestamp: event_time(data["ts"])
-    }
+    ticker =
+      case positive_decimal(data["lastPrice"]) do
+        {:ok, price} ->
+          %Ticker{
+            source: :bybit,
+            pair: pair,
+            price: price,
+            bid: parse_decimal(data["bid1Price"]),
+            ask: parse_decimal(data["ask1Price"]),
+            volume_24h: parse_decimal(data["volume24h"]),
+            change_24h: parse_decimal(data["price24hPcnt"]),
+            high_24h: parse_decimal(data["highPrice24h"]),
+            low_24h: parse_decimal(data["lowPrice24h"]),
+            timestamp: event_time(frame_ts)
+          }
 
-    result = [ticker]
-
-    result =
-      if data["fundingRate"] do
-        fr = %FundingRate{
-          source: :bybit,
-          pair: pair,
-          rate: parse_decimal(data["fundingRate"]),
-          next_funding_time: event_time(data["nextFundingTime"]),
-          timestamp: event_time(data["ts"])
-        }
-
-        [fr | result]
-      else
-        result
+        {:error, _} ->
+          # Delta tickers omit unchanged fields — no price signal, no tick.
+          nil
       end
 
-    {:ok, result}
+    result = if ticker, do: [ticker], else: []
+
+    result =
+      case parse_decimal(data["fundingRate"]) do
+        %Decimal{} = rate ->
+          [
+            %FundingRate{
+              source: :bybit,
+              pair: pair,
+              rate: rate,
+              next_funding_time: event_time(data["nextFundingTime"]),
+              timestamp: event_time(frame_ts)
+            }
+            | result
+          ]
+
+        _ ->
+          result
+      end
+
+    case result do
+      [] -> :ignore
+      structs -> {:ok, structs}
+    end
   end
 
-  defp parse_ticker(_), do: :ignore
+  defp parse_ticker(_, _), do: :ignore
 
   defp parse_trades(data) when is_list(data) do
     trades = Enum.flat_map(data, &build_trade/1)
@@ -242,6 +268,11 @@ defmodule Oracle.Sources.Streams.Bybit do
     pair |> Atom.to_string() |> String.upcase() |> String.replace("_", "")
   end
 
+  # Map the wire symbol back to pair atoms. Unknown symbols fall back
+  # to a downcased atom.
+  defp symbol_to_pair("BTCUSDT"), do: :btc_usdt
+  defp symbol_to_pair("ETHUSDT"), do: :eth_usdt
+
   defp symbol_to_pair(symbol) when is_binary(symbol) do
     String.to_existing_atom(String.downcase(symbol))
   rescue
@@ -268,6 +299,16 @@ defmodule Oracle.Sources.Streams.Bybit do
 
   defp parse_decimal(value) when is_number(value), do: Decimal.new("#{value}")
   defp parse_decimal(_), do: nil
+
+  defp positive_decimal(value) do
+    case parse_decimal(value) do
+      %Decimal{} = decimal ->
+        if Decimal.positive?(decimal), do: {:ok, decimal}, else: {:error, :non_positive}
+
+      _ ->
+        {:error, :invalid_decimal}
+    end
+  end
 
   defp event_time(ms) when is_integer(ms) do
     case DateTime.from_unix(ms, :millisecond) do

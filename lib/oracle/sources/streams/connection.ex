@@ -242,6 +242,15 @@ defmodule Oracle.Sources.Streams.Connection do
     Enum.each(structs, &send(state.target, {state.tag, state.adapter.name(), &1}))
   end
 
+  # Adapter-reported errors (rejected subscribes, vendor error frames) must
+  # never vanish silently — a dead channel otherwise looks exactly like a
+  # quiet one.
+  defp dispatch({:error, reason}, state) do
+    Logger.warning(
+      "StreamConn: adapter error, adapter=#{inspect(state.adapter)}, reason=#{inspect(reason)}"
+    )
+  end
+
   defp dispatch(_, _state), do: :ok
 
   # --- Subscribes ---

@@ -437,6 +437,66 @@ defmodule Oracle.AggregatorTest do
       # VWAP only uses binance and kraken: (100*10 + 120*10) / 20 = 110
       assert Decimal.equal?(price, Decimal.new("110"))
     end
+
+    test "VWAP ignores ticks with non-integer or negative volumes" do
+      timestamp = DateTime.utc_now()
+
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("100"),
+          volume: 10,
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new("200"),
+          volume: 10.5,
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :kraken,
+          pair: :btc_usd,
+          price: Decimal.new("50"),
+          volume: -5,
+          timestamp: timestamp
+        }
+      ]
+
+      config = %{strategy: :vwap, min_sources: 2}
+      assert {:ok, [%PriceUpdated{price: price}]} = Aggregator.aggregate(ticks, config)
+
+      # Only binance's volume is a usable weight
+      assert Decimal.equal?(price, Decimal.new("100"))
+    end
+
+    test "VWAP falls back to mean when all volumes are unusable" do
+      timestamp = DateTime.utc_now()
+
+      ticks = [
+        %PriceTick{
+          source: :binance,
+          pair: :btc_usd,
+          price: Decimal.new("100"),
+          volume: 1.5,
+          timestamp: timestamp
+        },
+        %PriceTick{
+          source: :coinbase,
+          pair: :btc_usd,
+          price: Decimal.new("200"),
+          volume: -3,
+          timestamp: timestamp
+        }
+      ]
+
+      config = %{strategy: :vwap, min_sources: 2}
+      assert {:ok, [%PriceUpdated{price: price}]} = Aggregator.aggregate(ticks, config)
+
+      assert Decimal.equal?(price, Decimal.new("150"))
+    end
   end
 
   describe "aggregate/2 with outlier detection" do

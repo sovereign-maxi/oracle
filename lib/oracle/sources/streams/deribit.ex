@@ -120,43 +120,61 @@ defmodule Oracle.Sources.Streams.Deribit do
     "ticker.#{pair_to_instrument(pair)}.raw"
   end
 
-  defp parse_ticker(data) when is_map(data) do
+  defp parse_ticker(data) do
+    if is_map(data) do
+      case ticker_structs(data) do
+        [] -> :ignore
+        structs -> {:ok, structs}
+      end
+    else
+      :ignore
+    end
+  end
+
+  defp ticker_structs(data) do
     pair = instrument_to_pair(data["instrument_name"])
 
-    result = [
-      %Ticker{
-        source: :deribit,
-        pair: pair,
-        price: parse_decimal(data["last_price"]),
-        bid: parse_decimal(data["best_bid_price"]),
-        ask: parse_decimal(data["best_ask_price"]),
-        volume_24h: parse_decimal(data["stats"] && data["stats"]["volume"]),
-        change_24h: parse_decimal(data["stats"] && data["stats"]["price_change"]),
-        high_24h: parse_decimal(data["stats"] && data["stats"]["high"]),
-        low_24h: parse_decimal(data["stats"] && data["stats"]["low"]),
-        timestamp: event_time(data["timestamp"])
-      }
-    ]
+    [ticker_struct(data, pair), funding_struct(data, pair)]
+    |> Enum.reject(&is_nil/1)
+  end
 
-    result =
-      if data["funding_8h"] do
-        fr = %FundingRate{
+  # A ticker is only emitted with a usable, positive price — never partial.
+  defp ticker_struct(data, pair) do
+    case positive_decimal(data["last_price"]) do
+      {:ok, price} ->
+        %Ticker{
           source: :deribit,
           pair: pair,
-          rate: parse_decimal(data["funding_8h"]),
+          price: price,
+          bid: parse_decimal(data["best_bid_price"]),
+          ask: parse_decimal(data["best_ask_price"]),
+          volume_24h: parse_decimal(data["stats"] && data["stats"]["volume"]),
+          change_24h: parse_decimal(data["stats"] && data["stats"]["price_change"]),
+          high_24h: parse_decimal(data["stats"] && data["stats"]["high"]),
+          low_24h: parse_decimal(data["stats"] && data["stats"]["low"]),
+          timestamp: event_time(data["timestamp"])
+        }
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  defp funding_struct(data, pair) do
+    case parse_decimal(data["funding_8h"]) do
+      %Decimal{} = rate ->
+        %FundingRate{
+          source: :deribit,
+          pair: pair,
+          rate: rate,
           next_funding_time: nil,
           timestamp: event_time(data["timestamp"])
         }
 
-        [fr | result]
-      else
-        result
-      end
-
-    {:ok, result}
+      _ ->
+        nil
+    end
   end
-
-  defp parse_ticker(_), do: :ignore
 
   defp parse_trades(data) when is_list(data) do
     trades = Enum.flat_map(data, &build_trade/1)
@@ -166,8 +184,8 @@ defmodule Oracle.Sources.Streams.Deribit do
   defp parse_trades(_), do: :ignore
 
   defp build_trade(item) do
-    with {:ok, price} <- safe_decimal(item["price"]),
-         {:ok, qty} <- safe_decimal(item["amount"]) do
+    with {:ok, price} <- positive_decimal(item["price"]),
+         {:ok, qty} <- contract_quantity(item["amount"], price) do
       side = if item["direction"] == "buy", do: :buy, else: :sell
 
       [
@@ -229,8 +247,8 @@ defmodule Oracle.Sources.Streams.Deribit do
   defp parse_liquidations(_), do: :ignore
 
   defp build_liquidation(item) do
-    with {:ok, price} <- safe_decimal(item["price"]),
-         {:ok, qty} <- safe_decimal(item["amount"]) do
+    with {:ok, price} <- positive_decimal(item["price"]),
+         {:ok, qty} <- contract_quantity(item["amount"], price) do
       side = if item["direction"] == "buy", do: :buy, else: :sell
 
       [
@@ -248,7 +266,8 @@ defmodule Oracle.Sources.Streams.Deribit do
     end
   end
 
-  # Deribit book levels: ["new"|"change"|"delete", price, amount]
+  # Deribit book levels: ["new"|"change"|"delete", price, amount] on delta
+  # updates; bare [price, amount] on snapshots.
   defp parse_levels(levels) when is_list(levels) do
     Enum.flat_map(levels, fn
       [action, price_num, qty_num] when action in ["new", "change"] ->
@@ -262,6 +281,14 @@ defmodule Oracle.Sources.Streams.Deribit do
       ["delete", price_num, _qty_num] ->
         case safe_decimal(price_num) do
           {:ok, price} -> [{price, Decimal.new(0)}]
+          _ -> []
+        end
+
+      [price_num, qty_num] ->
+        with {:ok, price} <- safe_decimal(price_num),
+             {:ok, qty} <- safe_decimal(qty_num) do
+          [{price, qty}]
+        else
           _ -> []
         end
 
@@ -328,4 +355,31 @@ defmodule Oracle.Sources.Streams.Deribit do
 
   defp safe_decimal(value) when is_number(value), do: {:ok, Decimal.new("#{value}")}
   defp safe_decimal(_), do: {:error, :invalid_value}
+
+  defp positive_decimal(value) do
+    case parse_decimal(value) do
+      %Decimal{} = decimal ->
+        if Decimal.positive?(decimal), do: {:ok, decimal}, else: {:error, :non_positive}
+
+      _ ->
+        {:error, :invalid_decimal}
+    end
+  end
+
+  # Deribit reports trade and liquidation amounts in USD contracts on the
+  # perpetual instruments this adapter subscribes. Convert to base units
+  # so quantity semantics match every other adapter.
+  defp contract_quantity(usd_amount, price) do
+    case safe_decimal(usd_amount) do
+      {:ok, usd} ->
+        if Decimal.gt?(usd, Decimal.new(0)) do
+          {:ok, Decimal.div(usd, price)}
+        else
+          {:error, :invalid_amount}
+        end
+
+      error ->
+        error
+    end
+  end
 end

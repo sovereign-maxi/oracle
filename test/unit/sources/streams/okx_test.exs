@@ -152,6 +152,29 @@ defmodule Oracle.Sources.Streams.OkxTest do
       assert :ignore = Okx.parse_message(%{"event" => "subscribe"})
     end
 
+    test "surfaces vendor error frames" do
+      msg = %{"event" => "error", "code" => "60018", "msg" => "Invalid channel"}
+
+      assert {:error, {:okx_error, ^msg}} = Okx.parse_message(msg)
+    end
+
+    test "skips ticker items without a usable price" do
+      msg = %{
+        "arg" => %{"channel" => "tickers", "instId" => "BTC-USDT-SWAP"},
+        "data" => [%{"instId" => "BTC-USDT-SWAP", "bidPx" => "", "ts" => "1704067200000"}]
+      }
+
+      assert {:ok, []} = Okx.parse_message(msg)
+    end
+
+    test "maps instrument IDs: tokenized stocks are spot, other X* pairs keep -SWAP" do
+      [msg] = Okx.subscribe_messages([%{feed: :ticker, pair: :xmstr_usdt}])
+      assert [%{"instId" => "XMSTR-USDT"}] = msg["args"]
+
+      [msg] = Okx.subscribe_messages([%{feed: :ticker, pair: :xrp_usdt}])
+      assert [%{"instId" => "XRP-USDT-SWAP"}] = msg["args"]
+    end
+
     test "handles pong" do
       assert :ping = Okx.parse_message(%{"op" => "pong"})
     end

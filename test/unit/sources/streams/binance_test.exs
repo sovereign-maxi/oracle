@@ -1,7 +1,7 @@
 defmodule Oracle.Sources.Streams.BinanceTest do
   use ExUnit.Case, async: true
 
-  alias Oracle.Feeds.{BookDelta, Liquidation, Ticker, Trade}
+  alias Oracle.Feeds.{Liquidation, Ticker, Trade}
   alias Oracle.Sources.Streams.Binance
 
   describe "name/0" do
@@ -13,14 +13,30 @@ defmodule Oracle.Sources.Streams.BinanceTest do
   describe "ws_url/1" do
     test "encodes channels in URL" do
       channels = [
-        %{feed: :ticker, pair: :btcusdt},
-        %{feed: :trades, pair: :btcusdt}
+        %{feed: :ticker, pair: :btc_usdt},
+        %{feed: :trades, pair: :btc_usdt}
       ]
 
       url = Binance.ws_url(channels)
       assert String.contains?(url, "wss://stream.binance.com:9443/stream?streams=")
       assert String.contains?(url, "miniTicker")
       assert String.contains?(url, "trade")
+    end
+
+    test "liquidation-only channels use the futures endpoint" do
+      url = Binance.ws_url([%{feed: :liquidations, pair: :btc_usdt}])
+
+      assert String.contains?(url, "wss://fstream.binance.com/stream?streams=")
+      assert String.contains?(url, "forceOrder")
+    end
+
+    test "mixing liquidations with spot feeds raises" do
+      channels = [
+        %{feed: :liquidations, pair: :btc_usdt},
+        %{feed: :ticker, pair: :btc_usdt}
+      ]
+
+      assert_raise ArgumentError, fn -> Binance.ws_url(channels) end
     end
   end
 
@@ -50,6 +66,22 @@ defmodule Oracle.Sources.Streams.BinanceTest do
       assert Decimal.equal?(ticker.price, Decimal.new("104523.45"))
     end
 
+    test "maps wire symbols back to stack pair atoms" do
+      msg = %{
+        "stream" => "btcusdt@miniTicker",
+        "data" => %{
+          "E" => 1_704_067_200_000,
+          "s" => "BTCUSDT",
+          "c" => "104523.45",
+          "h" => "105000.00",
+          "l" => "102000.00",
+          "v" => "28432.50"
+        }
+      }
+
+      assert {:ok, [%Ticker{pair: :btc_usdt}]} = Binance.parse_message(msg)
+    end
+
     test "parses trade message" do
       msg = %{
         "stream" => "btcusdt@trade",
@@ -71,36 +103,15 @@ defmodule Oracle.Sources.Streams.BinanceTest do
       assert trade.trade_id == "123456"
     end
 
-    test "parses depth message" do
-      msg = %{
-        "stream" => "btcusdt@depth",
-        "data" => %{
-          "e" => "depthUpdate",
-          "E" => 1_704_067_200_000,
-          "s" => "BTCUSDT",
-          "U" => 100,
-          "u" => 105,
-          "b" => [["104520.00", "2.5"]],
-          "a" => [["104525.00", "1.8"]]
-        }
-      }
-
-      assert {:ok, [%BookDelta{} = delta]} = Binance.parse_message(msg)
-      assert delta.source == :binance
-      assert delta.first_sequence == 100
-      assert delta.last_sequence == 105
-      assert length(delta.bids) == 1
-      assert length(delta.asks) == 1
-    end
-
-    test "parses liquidation message" do
+    test "parses liquidation message using average fill price" do
       msg = %{
         "stream" => "btcusdt@forceOrder",
         "data" => %{
           "o" => %{
             "s" => "BTCUSDT",
             "S" => "SELL",
-            "p" => "103500.00",
+            "p" => "0",
+            "ap" => "103500.00",
             "q" => "0.25",
             "T" => 1_704_067_200_000
           }
@@ -110,6 +121,25 @@ defmodule Oracle.Sources.Streams.BinanceTest do
       assert {:ok, [%Liquidation{} = liq]} = Binance.parse_message(msg)
       assert liq.source == :binance
       assert liq.side == :sell
+      assert Decimal.equal?(liq.price, Decimal.new("103500.00"))
+    end
+
+    test "rejects liquidation with missing or zero average price" do
+      msg = %{
+        "stream" => "btcusdt@forceOrder",
+        "data" => %{
+          "o" => %{
+            "s" => "BTCUSDT",
+            "S" => "SELL",
+            "p" => "103500.00",
+            "ap" => "0",
+            "q" => "0.25",
+            "T" => 1_704_067_200_000
+          }
+        }
+      }
+
+      assert {:error, :invalid_liquidation_data} = Binance.parse_message(msg)
     end
 
     test "ignores subscription confirmations" do
@@ -136,8 +166,8 @@ defmodule Oracle.Sources.Streams.BinanceTest do
       feeds = Binance.supported_feeds()
       assert :ticker in feeds
       assert :trades in feeds
-      assert :book in feeds
       assert :liquidations in feeds
+      refute :book in feeds
     end
   end
 end

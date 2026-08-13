@@ -5,35 +5,6 @@ defmodule Oracle.Sources.Source do
   Exchange adapters implement this behaviour to provide a consistent
   interface for fetching price data.
 
-  ## Implementing a Source
-
-      defmodule MyApp.Sources.Binance do
-        @behaviour Oracle.Sources.Source
-
-        @impl true
-        def name, do: :binance
-
-        @impl true
-        def fetch_price(:btc_usd) do
-          # Binance uses USDT pairs
-          fetch_price(:btc_usdt)
-        end
-
-        def fetch_price(:btc_usdt) do
-          case HTTPoison.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT") do
-            {:ok, %{status_code: 200, body: body}} ->
-              %{"price" => price} = Jason.decode!(body)
-              {:ok, Decimal.new(price)}
-
-            {:ok, %{status_code: code}} ->
-              {:error, {:http_error, code}}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-        end
-      end
-
   ## Supported Pairs
 
   Common trading pairs:

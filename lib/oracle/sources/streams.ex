@@ -4,44 +4,6 @@ defmodule Oracle.Sources.Streams do
 
   Exchange adapters implement this behaviour to provide a consistent
   interface for real-time market data via WebSocket connections.
-
-  ## Implementing a stream adapter
-
-      defmodule MyApp.Sources.Stream.Binance do
-        @behaviour Oracle.Sources.Streams
-
-        @impl true
-        def name, do: :binance
-
-        @impl true
-        def ws_url(channels) do
-          streams = Enum.map_join(channels, "/", &channel_to_stream/1)
-          "wss://stream.binance.com:9443/stream?streams=\#{streams}"
-        end
-
-        @impl true
-        def subscribe_messages(_channels), do: []
-
-        @impl true
-        def unsubscribe_messages(_channels), do: []
-
-        @impl true
-        def parse_message(msg), do: {:ok, [parse_ticker(msg)]}
-
-        @impl true
-        def ping_config, do: nil
-
-        @impl true
-        def supported_feeds, do: [:ticker, :trades, :book, :liquidations]
-      end
-
-  ## Feed Types
-
-  - `:ticker` - Real-time ticker/summary data
-  - `:trades` - Individual trade executions
-  - `:book` - Order book snapshots and deltas
-  - `:liquidations` - Forced liquidation events
-  - `:funding_rate` - Perpetual futures funding rates
   """
 
   @type feed :: :ticker | :book_ticker | :trades | :book | :liquidations | :funding_rate
@@ -80,7 +42,10 @@ defmodule Oracle.Sources.Streams do
   ## Returns
 
   - `{:ok, [struct]}` - Successfully parsed into one or more feed structs
-  - `:ping` - Message is a ping/pong that should be handled by the connection
+  - `:ping` - Message is a ping/pong acknowledgement. Informational only:
+    the connection performs no reply for it (WebSocket keepalive is Gun's
+    job; application heartbeats are driven by `ping_config`). Adapters
+    needing reply-style heartbeats must schedule them via `ping_config`.
   - `:ignore` - Message should be ignored (e.g., subscription confirmations)
   - `{:error, term}` - Parse error
   """

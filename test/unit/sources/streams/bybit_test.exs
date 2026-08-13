@@ -1,7 +1,7 @@
 defmodule Oracle.Sources.Streams.BybitTest do
   use ExUnit.Case, async: true
 
-  alias Oracle.Feeds.{BookDelta, BookSnapshot, Liquidation, Ticker, Trade}
+  alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Liquidation, Ticker, Trade}
   alias Oracle.Sources.Streams.Bybit
 
   describe "name/0" do
@@ -19,7 +19,7 @@ defmodule Oracle.Sources.Streams.BybitTest do
 
   describe "subscribe_messages/1" do
     test "returns subscribe message with topics" do
-      channels = [%{feed: :ticker, pair: :btcusdt}, %{feed: :trades, pair: :btcusdt}]
+      channels = [%{feed: :ticker, pair: :btc_usdt}, %{feed: :trades, pair: :btc_usdt}]
       [msg] = Bybit.subscribe_messages(channels)
       assert msg["op"] == "subscribe"
       assert is_list(msg["args"])
@@ -29,9 +29,11 @@ defmodule Oracle.Sources.Streams.BybitTest do
 
   describe "parse_message/1" do
     test "parses ticker message" do
+      # v5 carries the event time at the frame top level, not inside `data`
       msg = %{
         "topic" => "tickers.BTCUSDT",
         "type" => "snapshot",
+        "ts" => 1_704_067_200_000,
         "data" => %{
           "symbol" => "BTCUSDT",
           "lastPrice" => "104523.45",
@@ -40,8 +42,7 @@ defmodule Oracle.Sources.Streams.BybitTest do
           "volume24h" => "28432.50",
           "price24hPcnt" => "0.0235",
           "highPrice24h" => "105000.00",
-          "lowPrice24h" => "102000.00",
-          "ts" => 1_704_067_200_000
+          "lowPrice24h" => "102000.00"
         }
       }
 
@@ -49,6 +50,38 @@ defmodule Oracle.Sources.Streams.BybitTest do
       ticker = Enum.find(result, &match?(%Ticker{}, &1))
       assert ticker.source == :bybit
       assert Decimal.equal?(ticker.price, Decimal.new("104523.45"))
+      assert ticker.pair == :btc_usdt
+      assert ticker.timestamp == DateTime.from_unix!(1_704_067_200_000, :millisecond)
+    end
+
+    test "drops delta tickers without a usable price" do
+      msg = %{
+        "topic" => "tickers.BTCUSDT",
+        "type" => "delta",
+        "ts" => 1_704_067_200_000,
+        "data" => %{"symbol" => "BTCUSDT", "volume24h" => "28432.50"}
+      }
+
+      assert :ignore = Bybit.parse_message(msg)
+    end
+
+    test "keeps funding rate from price-less delta tickers" do
+      msg = %{
+        "topic" => "tickers.BTCUSDT",
+        "type" => "delta",
+        "ts" => 1_704_067_200_000,
+        "data" => %{"symbol" => "BTCUSDT", "fundingRate" => "0.0001"}
+      }
+
+      assert {:ok, [%FundingRate{} = fr]} = Bybit.parse_message(msg)
+      assert fr.source == :bybit
+      assert fr.timestamp == DateTime.from_unix!(1_704_067_200_000, :millisecond)
+    end
+
+    test "surfaces subscribe failures" do
+      msg = %{"op" => "subscribe", "success" => false, "ret_msg" => "invalid symbol"}
+
+      assert {:error, {:subscribe_error, ^msg}} = Bybit.parse_message(msg)
     end
 
     test "parses trade message" do
