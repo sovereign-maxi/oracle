@@ -20,12 +20,6 @@ jobs:
         with:
           path: oracle
 
-      - name: Checkout core
-        uses: actions/checkout@v4
-        with:
-          repository: sovereign-maxi/core
-          path: core
-
       - name: Set up Erlang / Elixir
         uses: erlef/setup-beam@v1
         with:

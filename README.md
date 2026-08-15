@@ -288,9 +288,11 @@ mix credo --strict
 ```elixir
 defp deps do
   [
-    {:core, path: "../core"},
     {:decimal, "~> 3.0"},
-    {:jason, "~> 1.4"}
+    {:gun, "~> 2.1"},
+    {:jason, "~> 1.4"},
+    {:mint_web_socket, "~> 1.0"},
+    {:telemetry, "~> 1.2"}
   ]
 end
 ```
