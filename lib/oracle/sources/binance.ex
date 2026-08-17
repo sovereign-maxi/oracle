@@ -47,6 +47,9 @@ defmodule Oracle.Sources.Binance do
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
 
+      {:ok, _other} ->
+        {:error, :invalid_response_shape}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -103,6 +106,9 @@ defmodule Oracle.Sources.Binance do
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
 
+      {:ok, _other} ->
+        {:error, :invalid_response_shape}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -158,6 +164,9 @@ defmodule Oracle.Sources.Binance do
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
 
+      {:ok, _other} ->
+        {:error, :invalid_response_shape}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -181,6 +190,9 @@ defmodule Oracle.Sources.Binance do
 
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
+
+      {:ok, _other} ->
+        {:error, :invalid_response_shape}
 
       {:error, reason} ->
         {:error, reason}
