@@ -20,6 +20,16 @@ defmodule Oracle.Sources.Streams.Connection do
 
   Reconnect uses exponential backoff bounded to [1s, 60s]. On every
   successful upgrade the backoff resets to 1s.
+
+  ## Egress proxy
+
+  When `:oracle, :stream_proxy` holds `{:http, host, port}` (wired by
+  the host application — e.g. the venue's Tor HTTPTunnelPort), the
+  WebSocket rides an HTTP CONNECT tunnel: gun opens a plain
+  connection to the proxy, issues CONNECT for the exchange origin,
+  then upgrades through the established tunnel stream. Unset means
+  direct egress — the host application is responsible for refusing
+  that in production.
   """
 
   use GenServer
@@ -39,6 +49,8 @@ defmodule Oracle.Sources.Streams.Connection do
     :gun_pid,
     :gun_mref,
     :ws_ref,
+    :tunnel,
+    :tunnel_ref,
     :ping_timer,
     :ping_message,
     :ping_interval_ms,
@@ -57,6 +69,63 @@ defmodule Oracle.Sources.Streams.Connection do
   def start_link(opts) do
     {name_opts, init_opts} = Keyword.split(opts, [:name])
     GenServer.start_link(__MODULE__, init_opts, name_opts)
+  end
+
+  @typedoc "Egress proxy config — an HTTP CONNECT tunnel endpoint."
+  @type proxy :: {:http, String.t(), :inet.port_number()}
+
+  @typedoc "Everything `handle_info(:connect, ...)` needs to open the socket."
+  @type connection_plan :: %{
+          open_host: charlist(),
+          open_port: :inet.port_number(),
+          open_opts: :gun.opts(),
+          tunnel: :gun.connect_destination() | nil
+        }
+
+  @doc """
+  Builds the gun connection plan for `uri` under an optional HTTP
+  CONNECT proxy.
+
+  `open_host` / `open_port` / `open_opts` feed `:gun.open/3`
+  directly. `tunnel` is `nil` for a direct connection; with a proxy
+  configured it is the `connect_destination` passed to
+  `:gun.connect/2` once the proxy connection is up, and the WebSocket
+  upgrade then rides the established tunnel stream. TLS to the origin
+  happens inside the tunnel with the same verification opts as a
+  direct connection.
+
+  Pure — no config reads, no I/O — so the egress shape is testable
+  without opening sockets.
+  """
+  @spec connection_plan(map(), proxy() | nil) :: connection_plan()
+  def connection_plan(%{scheme: scheme, host: host, port: port}, nil) do
+    %{
+      open_host: to_charlist(host),
+      open_port: port,
+      open_opts: %{
+        protocols: [:http],
+        transport: transport_for(scheme),
+        tls_opts: tls_opts(host),
+        retry: 0,
+        connect_timeout: @connect_timeout_ms
+      },
+      tunnel: nil
+    }
+  end
+
+  def connection_plan(%{scheme: scheme, host: host, port: port}, {:http, proxy_host, proxy_port})
+      when is_binary(proxy_host) and is_integer(proxy_port) do
+    %{
+      open_host: to_charlist(proxy_host),
+      open_port: proxy_port,
+      open_opts: %{
+        protocols: [:http],
+        transport: :tcp,
+        retry: 0,
+        connect_timeout: @connect_timeout_ms
+      },
+      tunnel: tunnel_destination(scheme, host, port)
+    }
   end
 
   # --- GenServer ---
@@ -94,18 +163,21 @@ defmodule Oracle.Sources.Streams.Connection do
 
   @impl true
   def handle_info(:connect, %{uri: uri} = state) do
-    open_opts = %{
-      protocols: [:http],
-      transport: transport_for(uri.scheme),
-      tls_opts: tls_opts(uri.host),
-      retry: 0,
-      connect_timeout: @connect_timeout_ms
-    }
+    plan = connection_plan(uri, stream_proxy())
 
-    case :gun.open(to_charlist(uri.host), uri.port, open_opts) do
+    case :gun.open(plan.open_host, plan.open_port, plan.open_opts) do
       {:ok, gun_pid} ->
         mref = Process.monitor(gun_pid)
-        {:noreply, %{state | gun_pid: gun_pid, gun_mref: mref, conn_state: :opening}}
+
+        {:noreply,
+         %{
+           state
+           | gun_pid: gun_pid,
+             gun_mref: mref,
+             tunnel: plan.tunnel,
+             tunnel_ref: nil,
+             conn_state: :opening
+         }}
 
       {:error, reason} ->
         Logger.info(
@@ -116,10 +188,55 @@ defmodule Oracle.Sources.Streams.Connection do
     end
   end
 
+  # Proxy connection came up — establish the CONNECT tunnel to the
+  # origin before any WebSocket upgrade.
+  def handle_info(
+        {:gun_up, gun_pid, _protocol},
+        %{gun_pid: gun_pid, tunnel: %{} = destination} = state
+      ) do
+    tunnel_ref = :gun.connect(gun_pid, destination)
+    {:noreply, %{state | tunnel_ref: tunnel_ref, conn_state: :tunneling}}
+  end
+
   # TCP/TLS came up — upgrade to WebSocket
   def handle_info({:gun_up, gun_pid, _protocol}, %{gun_pid: gun_pid, uri: uri} = state) do
     ws_ref = :gun.ws_upgrade(gun_pid, to_charlist(uri.path))
     {:noreply, %{state | ws_ref: ws_ref, conn_state: :upgrading}}
+  end
+
+  # CONNECT tunnel established — upgrade to WebSocket through it.
+  def handle_info(
+        {:gun_tunnel_up, gun_pid, tunnel_ref, _protocol},
+        %{gun_pid: gun_pid, tunnel_ref: tunnel_ref, uri: uri} = state
+      ) do
+    ws_ref = :gun.ws_upgrade(gun_pid, to_charlist(uri.path), [], %{tunnel: tunnel_ref})
+    {:noreply, %{state | ws_ref: ws_ref, conn_state: :upgrading}}
+  end
+
+  # CONNECT rejected by the proxy
+  def handle_info(
+        {:gun_response, gun_pid, tunnel_ref, _fin, status, _headers},
+        %{gun_pid: gun_pid, tunnel_ref: tunnel_ref, conn_state: :tunneling} = state
+      ) do
+    Logger.info(
+      "StreamConn: proxy CONNECT rejected, adapter=#{inspect(state.adapter)}, status=#{status}"
+    )
+
+    teardown(state)
+    schedule_reconnect(state)
+  end
+
+  # Stream-level error on the CONNECT request
+  def handle_info(
+        {:gun_error, gun_pid, tunnel_ref, reason},
+        %{gun_pid: gun_pid, tunnel_ref: tunnel_ref, conn_state: :tunneling} = state
+      ) do
+    Logger.info(
+      "StreamConn: proxy CONNECT error, adapter=#{inspect(state.adapter)}, reason=#{inspect(reason)}"
+    )
+
+    teardown(state)
+    schedule_reconnect(state)
   end
 
   # WebSocket handshake succeeded — subscribe and start pinging
@@ -191,6 +308,7 @@ defmodule Oracle.Sources.Streams.Connection do
       | gun_pid: nil,
         gun_mref: nil,
         ws_ref: nil,
+        tunnel_ref: nil,
         conn_state: :disconnected
     })
   end
@@ -278,6 +396,7 @@ defmodule Oracle.Sources.Streams.Connection do
          gun_pid: nil,
          gun_mref: nil,
          ws_ref: nil,
+         tunnel_ref: nil,
          backoff_ms: next_backoff
      }}
   end
@@ -306,6 +425,30 @@ defmodule Oracle.Sources.Streams.Connection do
   end
 
   # --- Transport helpers ---
+
+  # Egress proxy for the stream WebSockets — `{:http, host, port}` of
+  # an HTTP CONNECT tunnel, wired by the host application. Read at
+  # every connect so a config change lands on the next reconnect.
+  defp stream_proxy do
+    Application.get_env(:oracle, :stream_proxy)
+  end
+
+  # The CONNECT destination is the exchange origin; TLS terminates at
+  # the origin through the tunnel with the same verification opts a
+  # direct connection uses.
+  defp tunnel_destination(:wss, host, port) do
+    %{
+      host: to_charlist(host),
+      port: port,
+      transport: :tls,
+      tls_opts: tls_opts(host),
+      protocols: [:http]
+    }
+  end
+
+  defp tunnel_destination(:ws, host, port) do
+    %{host: to_charlist(host), port: port, transport: :tcp, protocols: [:http]}
+  end
 
   defp transport_for(:wss), do: :tls
   defp transport_for(:ws), do: :tcp
