@@ -70,13 +70,14 @@ defmodule Oracle.Sources.Streams.Okx do
   def parse_message(%{"event" => "subscribe"}), do: :ignore
   def parse_message(%{"event" => "unsubscribe"}), do: :ignore
   def parse_message(%{"event" => "error"} = msg), do: {:error, {:okx_error, msg}}
-  def parse_message(%{"op" => "pong"}), do: :ping
   def parse_message(_), do: :ignore
 
+  # OKX v5 expects an unquoted `ping` text frame (not JSON) and replies
+  # with an unquoted `pong`. The pong is not JSON either, so it never
+  # reaches `parse_message/1` — Connection's Jason.decode drops it,
+  # which is fine. The 25s interval sits inside OKX's 30s idle timeout.
   @impl true
-  def ping_config do
-    {%{"op" => "ping"}, 25_000}
-  end
+  def ping_config, do: {"ping", 25_000}
 
   @impl true
   def supported_feeds, do: [:ticker, :trades, :book, :liquidations, :funding_rate]

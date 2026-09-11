@@ -55,10 +55,13 @@ defmodule Oracle.Sources.Streams do
   @doc """
   Returns ping configuration for keepalive.
 
-  Returns `{message, interval_ms}` where message is a JSON-encodable
-  map to send as a ping, or `nil` if no application-level ping is needed.
+  Returns `{message, interval_ms}` where `message` is either a
+  JSON-encodable map (sent as `{:text, Jason.encode!(map)}`) or a
+  binary (sent as `{:text, binary}` verbatim — for exchanges like
+  OKX v5 that expect an unquoted `"ping"` string, not JSON).
+  `nil` disables application-level pings.
   """
-  @callback ping_config() :: {map(), pos_integer()} | nil
+  @callback ping_config() :: {map() | binary(), pos_integer()} | nil
 
   @doc """
   Returns the list of feed types supported by this source.

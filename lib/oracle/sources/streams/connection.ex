@@ -319,7 +319,7 @@ defmodule Oracle.Sources.Streams.Connection do
         %{gun_pid: pid, ws_ref: ref, ping_message: msg, conn_state: :ready} = state
       )
       when not is_nil(pid) and not is_nil(msg) do
-    :gun.ws_send(pid, ref, {:text, Jason.encode!(msg)})
+    :gun.ws_send(pid, ref, {:text, encode_ping(msg)})
     {:noreply, schedule_ping(state)}
   end
 
@@ -328,6 +328,9 @@ defmodule Oracle.Sources.Streams.Connection do
 
   # Late messages from a previous incarnation of the connection
   def handle_info(_other, state), do: {:noreply, state}
+
+  defp encode_ping(msg) when is_binary(msg), do: msg
+  defp encode_ping(msg), do: Jason.encode!(msg)
 
   @impl true
   def terminate(_reason, state), do: teardown(state)

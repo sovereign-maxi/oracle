@@ -175,16 +175,11 @@ defmodule Oracle.Sources.Streams.OkxTest do
       assert [%{"instId" => "XRP-USDT-SWAP"}] = msg["args"]
     end
 
-    test "handles pong" do
-      assert :ping = Okx.parse_message(%{"op" => "pong"})
-    end
   end
 
   describe "ping_config/0" do
-    test "returns ping config" do
-      {msg, interval} = Okx.ping_config()
-      assert msg["op"] == "ping"
-      assert interval == 25_000
+    test "returns a raw-text ping config (OKX v5 rejects JSON-object pings)" do
+      assert {"ping", 25_000} = Okx.ping_config()
     end
   end
 
