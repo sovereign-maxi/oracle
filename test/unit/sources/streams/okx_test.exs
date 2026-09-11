@@ -174,7 +174,6 @@ defmodule Oracle.Sources.Streams.OkxTest do
       [msg] = Okx.subscribe_messages([%{feed: :ticker, pair: :xrp_usdt}])
       assert [%{"instId" => "XRP-USDT-SWAP"}] = msg["args"]
     end
-
   end
 
   describe "ping_config/0" do
