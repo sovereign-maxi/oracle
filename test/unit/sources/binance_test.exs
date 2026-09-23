@@ -192,5 +192,60 @@ defmodule Oracle.Sources.BinanceTest do
 
       assert {:error, :invalid_kline_data} = Binance.fetch_klines(:btc_usdt)
     end
+
+    test "empty range short-circuits to []" do
+      # start_ms past end_ms — never hits the network.
+      assert {:ok, []} =
+               Binance.fetch_klines(:btc_usdt,
+                 interval: "1m",
+                 start_ms: 2_000_000,
+                 end_ms: 1_000_000
+               )
+    end
+
+    test "unsupported interval rejects the range call" do
+      assert {:error, {:unsupported_interval, "7s"}} =
+               Binance.fetch_klines(:btc_usdt,
+                 interval: "7s",
+                 start_ms: 1_000,
+                 end_ms: 2_000
+               )
+    end
+
+    test "range mode issues a startTime/endTime paged request" do
+      # Record every URL the mock sees so we can assert on the shape.
+      test_pid = self()
+
+      defmodule RangeMockHTTP do
+        def get(url, _headers, _opts) do
+          send(:range_mock_target, {:url, url})
+
+          {:ok,
+           %{
+             status_code: 200,
+             body:
+               ~s([[1704067200000,"100.0","101.0","99.5","100.5","12.34",1704067259999,"0",10,"0","0","0"]])
+           }}
+        end
+      end
+
+      Process.register(test_pid, :range_mock_target)
+      Application.put_env(:oracle, :http_client, RangeMockHTTP)
+
+      assert {:ok, [kline]} =
+               Binance.fetch_klines(:btc_usdt,
+                 interval: "1m",
+                 start_ms: 1_704_067_200_000,
+                 end_ms: 1_704_067_200_000 + 5 * 60_000
+               )
+
+      assert Decimal.equal?(kline.close, Decimal.new("100.5"))
+
+      assert_receive {:url, url}
+      assert url =~ "startTime=1704067200000"
+      assert url =~ "endTime="
+
+      Process.unregister(:range_mock_target)
+    end
   end
 end

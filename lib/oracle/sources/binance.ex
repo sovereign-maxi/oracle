@@ -56,14 +56,20 @@ defmodule Oracle.Sources.Binance do
   end
 
   @doc """
-  Fetches recent OHLCV klines for `pair` at the given `interval`.
+  Fetches OHLCV klines for `pair` at the given `interval`.
 
   ## Parameters
 
   - `pair` — one of the mapped atoms (e.g. `:mstrbusdt`)
   - `opts`
     - `:interval` — string like `"1m"`, `"5m"`, `"1h"` (default `"1m"`)
-    - `:limit` — max 1000 (default 100)
+    - `:limit` — max 1000 (default 100) — ignored when a range is given
+    - `:start_ms` — inclusive lower bound in unix milliseconds
+    - `:end_ms` — inclusive upper bound in unix milliseconds
+
+  Passing BOTH `:start_ms` and `:end_ms` fetches the range and pages
+  internally in 1000-kline windows. Passing neither returns the most
+  recent `limit` klines.
 
   ## Response
 
@@ -87,21 +93,23 @@ defmodule Oracle.Sources.Binance do
   @spec fetch_klines(atom(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def fetch_klines(pair, opts \\ []) do
     interval = Keyword.get(opts, :interval, "1m")
-    limit = Keyword.get(opts, :limit, 100)
+    start_ms = Keyword.get(opts, :start_ms)
+    end_ms = Keyword.get(opts, :end_ms)
+
+    if is_integer(start_ms) and is_integer(end_ms) do
+      fetch_klines_range(pair, interval, start_ms, end_ms)
+    else
+      limit = Keyword.get(opts, :limit, 100)
+      fetch_klines_recent(pair, interval, limit)
+    end
+  end
+
+  defp fetch_klines_recent(pair, interval, limit) do
     symbol = pair_to_symbol(pair)
 
     case http_get("/api/v3/klines?symbol=#{symbol}&interval=#{interval}&limit=#{limit}") do
       {:ok, klines} when is_list(klines) ->
-        klines
-        |> Enum.map(&parse_kline/1)
-        |> Enum.reduce_while({:ok, []}, fn
-          {:ok, kline}, {:ok, acc} -> {:cont, {:ok, [kline | acc]}}
-          {:error, _}, _acc -> {:halt, {:error, :invalid_kline_data}}
-        end)
-        |> case do
-          {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
-          error -> error
-        end
+        parse_klines(klines)
 
       {:ok, %{"code" => code, "msg" => msg}} ->
         {:error, {:api_error, code, msg}}
@@ -113,6 +121,83 @@ defmodule Oracle.Sources.Binance do
         {:error, reason}
     end
   end
+
+  defp fetch_klines_range(_pair, _interval, start_ms, end_ms) when start_ms > end_ms, do: {:ok, []}
+
+  defp fetch_klines_range(pair, interval, start_ms, end_ms) do
+    case interval_ms(interval) do
+      nil -> {:error, {:unsupported_interval, interval}}
+      step_ms -> page_range(pair_to_symbol(pair), interval, step_ms, start_ms, end_ms)
+    end
+  end
+
+  defp page_range(symbol, interval, step_ms, start_ms, end_ms) do
+    window_ms = 1000 * step_ms
+
+    start_ms
+    |> page_windows(step_ms, window_ms, end_ms)
+    |> Enum.reduce_while({:ok, []}, &accumulate_page(&1, &2, symbol, interval))
+  end
+
+  defp page_windows(start_ms, step_ms, window_ms, end_ms) do
+    Stream.unfold(start_ms, fn
+      s when s > end_ms -> nil
+      s -> {{s, min(s + window_ms - step_ms, end_ms)}, s + window_ms}
+    end)
+  end
+
+  defp accumulate_page({s, e}, {:ok, acc}, symbol, interval) do
+    case fetch_klines_page(symbol, interval, s, e) do
+      {:ok, klines} -> {:cont, {:ok, acc ++ klines}}
+      {:error, _} = err -> {:halt, err}
+    end
+  end
+
+  defp fetch_klines_page(symbol, interval, start_ms, end_ms) do
+    path =
+      "/api/v3/klines?symbol=#{symbol}&interval=#{interval}&startTime=#{start_ms}&endTime=#{end_ms}&limit=1000"
+
+    case http_get(path) do
+      {:ok, klines} when is_list(klines) ->
+        parse_klines(klines)
+
+      {:ok, %{"code" => code, "msg" => msg}} ->
+        {:error, {:api_error, code, msg}}
+
+      {:ok, _other} ->
+        {:error, :invalid_response_shape}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_klines(klines) do
+    klines
+    |> Enum.map(&parse_kline/1)
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, kline}, {:ok, acc} -> {:cont, {:ok, [kline | acc]}}
+      {:error, _}, _acc -> {:halt, {:error, :invalid_kline_data}}
+    end)
+    |> case do
+      {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
+      error -> error
+    end
+  end
+
+  defp interval_ms("1m"), do: 60_000
+  defp interval_ms("3m"), do: 180_000
+  defp interval_ms("5m"), do: 300_000
+  defp interval_ms("15m"), do: 900_000
+  defp interval_ms("30m"), do: 1_800_000
+  defp interval_ms("1h"), do: 3_600_000
+  defp interval_ms("2h"), do: 7_200_000
+  defp interval_ms("4h"), do: 14_400_000
+  defp interval_ms("6h"), do: 21_600_000
+  defp interval_ms("8h"), do: 28_800_000
+  defp interval_ms("12h"), do: 43_200_000
+  defp interval_ms("1d"), do: 86_400_000
+  defp interval_ms(_), do: nil
 
   @doc """
   Fetches rolling 24-hour stats for `pair`.
