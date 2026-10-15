@@ -18,6 +18,22 @@ defmodule Oracle.Sources.Streams.Connection do
   PINGs) is scheduled here. WebSocket protocol PINGs are handled by
   Gun natively — we never see them.
 
+  ## Receive-side watchdog
+
+  Opt-in via `:receive_timeout_ms` (nil default = disabled). When
+  enabled, every arrival of an inbound `:gun_ws` frame — ticker,
+  trade, binary, close — resets a timer; if the timer fires before
+  the next frame arrives, the connection is torn down and the
+  standard reconnect path takes over.
+
+  The gap this closes: an exchange edge node can accept the WS
+  upgrade, honor Gun's protocol PINGs, and still stop forwarding
+  stream data under load. TCP + WS-protocol layers all look
+  healthy; the GenServer sits in `:ready` forever. The watchdog
+  closes the detection window between "data silent" (now bounded
+  by `receive_timeout_ms`) and "TCP declared dead" (minutes, via
+  OS retransmit timeouts).
+
   Reconnect uses exponential backoff bounded to [1s, 60s]. On every
   successful upgrade the backoff resets to 1s.
 
@@ -54,6 +70,8 @@ defmodule Oracle.Sources.Streams.Connection do
     :ping_timer,
     :ping_message,
     :ping_interval_ms,
+    :receive_timer,
+    :receive_timeout_ms,
     backoff_ms: @reconnect_min_ms,
     conn_state: :disconnected
   ]
@@ -64,6 +82,7 @@ defmodule Oracle.Sources.Streams.Connection do
           | {:target, pid()}
           | {:tag, atom()}
           | {:name, GenServer.name()}
+          | {:receive_timeout_ms, pos_integer() | nil}
 
   @spec start_link([start_opt()]) :: GenServer.on_start()
   def start_link(opts) do
@@ -136,6 +155,7 @@ defmodule Oracle.Sources.Streams.Connection do
     channels = Keyword.fetch!(opts, :channels)
     target = Keyword.fetch!(opts, :target)
     tag = Keyword.get(opts, :tag, :oracle_tick)
+    receive_timeout_ms = Keyword.get(opts, :receive_timeout_ms)
 
     url = adapter.ws_url(channels)
 
@@ -147,7 +167,8 @@ defmodule Oracle.Sources.Streams.Connection do
             channels: channels,
             target: target,
             tag: tag,
-            uri: uri
+            uri: uri,
+            receive_timeout_ms: receive_timeout_ms
           }
           |> apply_ping_config(adapter.ping_config())
 
@@ -246,7 +267,10 @@ defmodule Oracle.Sources.Streams.Connection do
       ) do
     send_subscribes(state)
 
-    {:noreply, %{state | conn_state: :ready, backoff_ms: @reconnect_min_ms} |> schedule_ping()}
+    {:noreply,
+     %{state | conn_state: :ready, backoff_ms: @reconnect_min_ms}
+     |> schedule_ping()
+     |> schedule_receive_watchdog()}
   end
 
   # WebSocket handshake rejected
@@ -273,12 +297,16 @@ defmodule Oracle.Sources.Streams.Connection do
     schedule_reconnect(state)
   end
 
-  # Frame from the exchange
+  # Frame from the exchange. Any inbound frame — ticker, trade,
+  # binary, close — is evidence-of-life; reset the receive
+  # watchdog before dispatching. Gun handles WS-protocol ping/pong
+  # internally and does not surface those as `:gun_ws`, so this
+  # path only ever sees data or close frames.
   def handle_info(
         {:gun_ws, gun_pid, ws_ref, frame},
         %{gun_pid: gun_pid, ws_ref: ws_ref} = state
       ) do
-    handle_frame(frame, state)
+    handle_frame(frame, schedule_receive_watchdog(state))
   end
 
   # Connection dropped (TCP/TLS closed, remote side)
@@ -325,6 +353,24 @@ defmodule Oracle.Sources.Streams.Connection do
 
   # Ping timer fired while disconnected — drop it
   def handle_info(:ping, state), do: {:noreply, state}
+
+  # Receive-watchdog fired: no inbound frame for `receive_timeout_ms`.
+  # Zombie-socket signature — TCP alive, protocol pings honored
+  # (that's Gun's job), stream data silent. Tear down and reconnect
+  # through the standard backoff path.
+  def handle_info(:receive_timeout, %{conn_state: :ready, receive_timeout_ms: ms} = state) do
+    Logger.warning(
+      "StreamConn: receive timeout — zombie socket, adapter=#{inspect(state.adapter)}, timeout_ms=#{ms}, action=reconnecting"
+    )
+
+    teardown(state)
+    schedule_reconnect(%{state | receive_timer: nil})
+  end
+
+  # Stale timer that fired while already disconnected / mid-upgrade —
+  # drop silently. The schedule_reconnect path has already taken
+  # the right action and the backoff is intact.
+  def handle_info(:receive_timeout, state), do: {:noreply, %{state | receive_timer: nil}}
 
   # Late messages from a previous incarnation of the connection
   def handle_info(_other, state), do: {:noreply, state}
@@ -392,6 +438,9 @@ defmodule Oracle.Sources.Streams.Connection do
     Process.send_after(self(), :connect, state.backoff_ms)
     next_backoff = min(state.backoff_ms * 2, @reconnect_max_ms)
 
+    # Timer refs were physically canceled in `teardown/1`; clear
+    # them from state too so a subsequent sanity read (or the
+    # next re-arm after reconnect) sees nil, not a stale ref.
     {:noreply,
      %{
        state
@@ -400,12 +449,15 @@ defmodule Oracle.Sources.Streams.Connection do
          gun_mref: nil,
          ws_ref: nil,
          tunnel_ref: nil,
+         ping_timer: nil,
+         receive_timer: nil,
          backoff_ms: next_backoff
      }}
   end
 
   defp teardown(state) do
     if state.ping_timer, do: Process.cancel_timer(state.ping_timer)
+    if state.receive_timer, do: Process.cancel_timer(state.receive_timer)
     if state.gun_mref, do: Process.demonitor(state.gun_mref, [:flush])
     if state.gun_pid, do: :gun.close(state.gun_pid)
     :ok
@@ -425,6 +477,41 @@ defmodule Oracle.Sources.Streams.Connection do
     if old, do: Process.cancel_timer(old)
     timer = Process.send_after(self(), :ping, interval)
     %{state | ping_timer: timer}
+  end
+
+  # --- Receive watchdog (zombie-socket detection) ---
+
+  # Nil timeout → feature off, no timer, no re-arm. Preserves
+  # legacy behavior for any caller that doesn't opt in.
+  defp schedule_receive_watchdog(%{receive_timeout_ms: nil} = state), do: state
+
+  # Cancel-on-re-arm is load-bearing: without it, an old
+  # `:receive_timeout` message queued from a pre-frame arm would
+  # race into a fresh teardown even though frames just arrived.
+  # Mirror `schedule_ping/1`'s pattern — cancel, then arm —
+  # plus a mailbox flush when the timer already fired, so a
+  # stale message cannot survive the re-arm boundary.
+  defp schedule_receive_watchdog(%{receive_timeout_ms: ms, receive_timer: old} = state)
+       when is_integer(ms) do
+    if old do
+      case Process.cancel_timer(old) do
+        false ->
+          # Timer fired before cancel landed — the message is in
+          # the mailbox. Flush it so a healthy frame doesn't race
+          # a stale teardown.
+          receive do
+            :receive_timeout -> :ok
+          after
+            0 -> :ok
+          end
+
+        _ms_remaining ->
+          :ok
+      end
+    end
+
+    timer = Process.send_after(self(), :receive_timeout, ms)
+    %{state | receive_timer: timer}
   end
 
   # --- Transport helpers ---
