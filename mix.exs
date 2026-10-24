@@ -41,7 +41,7 @@ defmodule Oracle.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
-      {:faker, "~> 0.18", only: :test}
+      {:faker, "~> 0.19", only: :test}
     ]
   end
 
