@@ -6,12 +6,13 @@ defmodule Oracle.Sources.Streams.Binance do
 
   ## WebSocket Endpoint
 
-      wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/btcusdt@trade
+      wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/btcusdt@trade/btcusdt@kline_1m
 
   ## Supported Feeds
 
   - `:ticker` - 24hr mini ticker
   - `:trades` - Real-time trade executions
+  - `:klines` - Exchange-built 1-minute OHLC candles
   - `:liquidations` - Forced liquidation orders (futures only)
 
   ## Liquidations live on the futures endpoint
@@ -26,7 +27,7 @@ defmodule Oracle.Sources.Streams.Binance do
 
   @behaviour Oracle.Sources.Streams
 
-  alias Oracle.Feeds.{Liquidation, Ticker, Trade}
+  alias Oracle.Feeds.{Kline, Liquidation, Ticker, Trade}
 
   @ws_base_spot "wss://stream.binance.com:9443/stream"
   @ws_base_futures "wss://fstream.binance.com/stream"
@@ -52,6 +53,7 @@ defmodule Oracle.Sources.Streams.Binance do
       String.ends_with?(stream, "@miniTicker") -> parse_ticker(data)
       String.ends_with?(stream, "@bookTicker") -> parse_book_ticker(data)
       String.ends_with?(stream, "@trade") -> parse_trade(data)
+      String.ends_with?(stream, "@kline_1m") -> parse_kline(data)
       String.ends_with?(stream, "@forceOrder") -> parse_liquidation(data)
       true -> :ignore
     end
@@ -65,7 +67,7 @@ defmodule Oracle.Sources.Streams.Binance do
   def ping_config, do: nil
 
   @impl true
-  def supported_feeds, do: [:ticker, :book_ticker, :trades, :liquidations]
+  def supported_feeds, do: [:ticker, :book_ticker, :trades, :klines, :liquidations]
 
   # ─────────────────────────────────────────────────────────────
   # Private Functions
@@ -100,6 +102,10 @@ defmodule Oracle.Sources.Streams.Binance do
 
   defp channel_to_stream(%{feed: :trades, pair: pair}) do
     "#{pair_to_symbol(pair)}@trade"
+  end
+
+  defp channel_to_stream(%{feed: :klines, pair: pair}) do
+    "#{pair_to_symbol(pair)}@kline_1m"
   end
 
   defp channel_to_stream(%{feed: :liquidations, pair: pair}) do
@@ -161,6 +167,35 @@ defmodule Oracle.Sources.Streams.Binance do
   end
 
   defp parse_book_ticker(_), do: {:error, :invalid_book_ticker}
+
+  defp parse_kline(%{"k" => %{"i" => "1m", "t" => opened_ms, "x" => closed?} = data})
+       when is_integer(opened_ms) and is_boolean(closed?) do
+    with {:ok, open} <- positive_decimal(data["o"]),
+         {:ok, high} <- positive_decimal(data["h"]),
+         {:ok, low} <- positive_decimal(data["l"]),
+         {:ok, close} <- positive_decimal(data["c"]),
+         {:ok, timestamp} <- DateTime.from_unix(opened_ms, :millisecond),
+         true <- rem(opened_ms, 60_000) == 0 do
+      {:ok,
+       [
+         %Kline{
+           source: :binance,
+           pair: symbol_to_pair(data["s"]),
+           timeframe: :"1m",
+           open: open,
+           high: high,
+           low: low,
+           close: close,
+           timestamp: timestamp,
+           closed?: closed?
+         }
+       ]}
+    else
+      _ -> {:error, :invalid_kline_data}
+    end
+  end
+
+  defp parse_kline(_), do: {:error, :invalid_kline_data}
 
   defp parse_trade(data) do
     with {:ok, price} <- safe_decimal(data["p"]),

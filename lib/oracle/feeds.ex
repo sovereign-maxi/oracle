@@ -9,6 +9,7 @@ defmodule Oracle.Feeds do
 
   - `Ticker` - Real-time ticker/summary data
   - `Trade` - Individual trade executions
+  - `Kline` - Exchange-built OHLC candle updates
   - `BookSnapshot` - Full order book snapshot
   - `BookDelta` - Incremental order book update
   - `Liquidation` - Forced liquidation events
@@ -97,6 +98,44 @@ defmodule Oracle.Feeds do
           }
 
     defstruct [:source, :pair, :trade_id, :price, :quantity, :side, :timestamp, version: 1]
+  end
+
+  # ─────────────────────────────────────────────────────────────
+  # Kline
+  # ─────────────────────────────────────────────────────────────
+
+  defmodule Kline do
+    @moduledoc """
+    Exchange-built OHLC candle from a streaming kline feed.
+
+    `timestamp` is the exchange's bucket-open time, not receipt time.
+    Both forming and closed candles use the same representation.
+    """
+    @type t :: %__MODULE__{
+            source: atom(),
+            pair: atom(),
+            timeframe: :"1m",
+            open: Decimal.t(),
+            high: Decimal.t(),
+            low: Decimal.t(),
+            close: Decimal.t(),
+            timestamp: DateTime.t(),
+            closed?: boolean(),
+            version: pos_integer()
+          }
+
+    defstruct [
+      :source,
+      :pair,
+      :timeframe,
+      :open,
+      :high,
+      :low,
+      :close,
+      :timestamp,
+      :closed?,
+      version: 1
+    ]
   end
 
   # ─────────────────────────────────────────────────────────────

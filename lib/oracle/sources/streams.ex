@@ -6,7 +6,7 @@ defmodule Oracle.Sources.Streams do
   interface for real-time market data via WebSocket connections.
   """
 
-  @type feed :: :ticker | :book_ticker | :trades | :book | :liquidations | :funding_rate
+  @type feed :: :ticker | :book_ticker | :trades | :klines | :book | :liquidations | :funding_rate
 
   @type channel :: %{feed: feed(), pair: atom()}
 

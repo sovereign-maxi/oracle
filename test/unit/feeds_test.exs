@@ -1,7 +1,7 @@
 defmodule Oracle.FeedsTest do
   use ExUnit.Case, async: true
 
-  alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Liquidation, Ticker, Trade}
+  alias Oracle.Feeds.{BookDelta, BookSnapshot, FundingRate, Kline, Liquidation, Ticker, Trade}
 
   describe "Ticker" do
     test "has expected struct fields" do
@@ -181,6 +181,7 @@ defmodule Oracle.FeedsTest do
     test "all feed structs default to version 1" do
       assert %Ticker{}.version == 1
       assert %Trade{}.version == 1
+      assert %Kline{}.version == 1
       assert %BookSnapshot{}.version == 1
       assert %BookDelta{}.version == 1
       assert %Liquidation{}.version == 1

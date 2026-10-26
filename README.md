@@ -52,7 +52,7 @@ end
 | `Oracle.Candles` | OHLC candle building from ticks |
 | `Oracle.Book` | Pure order book management functions |
 | `Oracle.Connection` | Stateless WebSocket connection utilities (backoff, health) |
-| `Oracle.Feeds` | Feed data structs for streaming (Ticker, Trade, Book, Liquidation, FundingRate) |
+| `Oracle.Feeds` | Feed data structs for streaming (Ticker, Trade, Kline, Book, Liquidation, FundingRate) |
 
 ### Behaviours
 
