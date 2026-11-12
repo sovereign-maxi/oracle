@@ -25,6 +25,7 @@ defmodule Oracle.Sources.Streams.OkxTest do
       assert is_list(msg["args"])
       [arg] = msg["args"]
       assert arg["channel"] == "tickers"
+      assert arg["instId"] == "BTC-USDT"
     end
   end
 
@@ -68,6 +69,64 @@ defmodule Oracle.Sources.Streams.OkxTest do
       assert {:ok, [%Trade{} = trade]} = Okx.parse_message(msg)
       assert trade.source == :okx
       assert trade.side == :buy
+      assert trade.market_type == :swap
+    end
+
+    test "parses the configured BTCUSDT spot instrument" do
+      msg = %{
+        "arg" => %{"channel" => "trades", "instId" => "BTC-USDT"},
+        "data" => [
+          %{
+            "instId" => "BTC-USDT",
+            "tradeId" => "12345",
+            "px" => "104523.45",
+            "sz" => "0.5",
+            "side" => "buy",
+            "ts" => "1704067200000"
+          }
+        ]
+      }
+
+      assert {:ok, [%Trade{pair: :btc_usdt, market_type: :spot}]} = Okx.parse_message(msg)
+    end
+
+    test "drops missing and malformed trade timestamps" do
+      msg = %{
+        "arg" => %{"channel" => "trades", "instId" => "BTC-USDT"},
+        "data" => [
+          %{
+            "instId" => "BTC-USDT",
+            "tradeId" => "12345",
+            "px" => "104523.45",
+            "sz" => "0.5",
+            "side" => "buy",
+            "ts" => "1704067200000"
+          }
+        ]
+      }
+
+      for timestamp <- [nil, "not-a-time", -1, 9_999_999_999_999_999] do
+        invalid = put_in(msg, ["data", Access.at(0), "ts"], timestamp)
+        assert {:ok, []} = Okx.parse_message(invalid)
+      end
+    end
+
+    test "rejects argument and item instrument mismatches" do
+      msg = %{
+        "arg" => %{"channel" => "trades", "instId" => "BTC-USDT"},
+        "data" => [
+          %{
+            "instId" => "BTC-USDT-SWAP",
+            "tradeId" => "12345",
+            "px" => "104523.45",
+            "sz" => "0.5",
+            "side" => "buy",
+            "ts" => "1704067200000"
+          }
+        ]
+      }
+
+      assert {:error, :instrument_mismatch} = Okx.parse_message(msg)
     end
 
     test "parses book snapshot" do

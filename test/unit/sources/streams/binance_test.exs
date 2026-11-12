@@ -103,6 +103,42 @@ defmodule Oracle.Sources.Streams.BinanceTest do
       assert trade.source == :binance
       assert trade.side == :buy
       assert trade.trade_id == "123456"
+      assert trade.market_type == :spot
+    end
+
+    test "rejects missing and malformed trade timestamps" do
+      msg = %{
+        "stream" => "btcusdt@trade",
+        "data" => %{
+          "T" => 1_704_067_200_000,
+          "s" => "BTCUSDT",
+          "t" => 123_456,
+          "p" => "104523.45",
+          "q" => "0.5",
+          "m" => false
+        }
+      }
+
+      for timestamp <- [nil, "1704067200000", -1, 9_999_999_999_999_999] do
+        invalid = put_in(msg, ["data", "T"], timestamp)
+        assert {:error, :invalid_trade_data} = Binance.parse_message(invalid)
+      end
+    end
+
+    test "rejects an outer stream and inner trade instrument mismatch" do
+      msg = %{
+        "stream" => "btcusdt@trade",
+        "data" => %{
+          "T" => 1_704_067_200_000,
+          "s" => "ETHUSDT",
+          "t" => 123_456,
+          "p" => "104523.45",
+          "q" => "0.5",
+          "m" => false
+        }
+      }
+
+      assert {:error, :instrument_mismatch} = Binance.parse_message(msg)
     end
 
     test "parses liquidation message using average fill price" do

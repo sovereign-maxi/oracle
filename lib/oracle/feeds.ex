@@ -28,6 +28,7 @@ defmodule Oracle.Feeds do
 
     - `source` - Exchange identifier (e.g., :binance, :bybit)
     - `pair` - Trading pair (e.g., :btc_usdt)
+    - `market_type` - Instrument market (`:spot` or `:swap`)
     - `price` - Last traded price
     - `bid` - Best bid price
     - `ask` - Best ask price
@@ -41,6 +42,7 @@ defmodule Oracle.Feeds do
     @type t :: %__MODULE__{
             source: atom(),
             pair: atom(),
+            market_type: :spot | :swap | nil,
             price: Decimal.t() | nil,
             bid: Decimal.t() | nil,
             ask: Decimal.t() | nil,
@@ -55,6 +57,7 @@ defmodule Oracle.Feeds do
     defstruct [
       :source,
       :pair,
+      :market_type,
       :price,
       :bid,
       :ask,
@@ -79,6 +82,7 @@ defmodule Oracle.Feeds do
 
     - `source` - Exchange identifier
     - `pair` - Trading pair
+    - `market_type` - Instrument market (`:spot` or `:swap`)
     - `trade_id` - Exchange-specific trade identifier
     - `price` - Trade execution price
     - `quantity` - Trade quantity in base currency
@@ -89,6 +93,7 @@ defmodule Oracle.Feeds do
     @type t :: %__MODULE__{
             source: atom(),
             pair: atom(),
+            market_type: :spot | :swap | nil,
             trade_id: String.t() | nil,
             price: Decimal.t(),
             quantity: Decimal.t(),
@@ -97,7 +102,17 @@ defmodule Oracle.Feeds do
             version: pos_integer()
           }
 
-    defstruct [:source, :pair, :trade_id, :price, :quantity, :side, :timestamp, version: 1]
+    defstruct [
+      :source,
+      :pair,
+      :market_type,
+      :trade_id,
+      :price,
+      :quantity,
+      :side,
+      :timestamp,
+      version: 1
+    ]
   end
 
   # ─────────────────────────────────────────────────────────────

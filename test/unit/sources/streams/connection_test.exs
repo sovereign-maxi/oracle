@@ -1,6 +1,7 @@
 defmodule Oracle.Sources.Streams.ConnectionTest do
   use ExUnit.Case, async: true
 
+  alias Oracle.Feeds.{Kline, Trade}
   alias Oracle.Sources.Streams.Connection
 
   @uri %{scheme: :wss, host: "stream.binance.com", port: 443, path: "/ws"}
@@ -23,15 +24,11 @@ defmodule Oracle.Sources.Streams.ConnectionTest do
     test "opens plain TCP to the proxy and carries the origin as the tunnel destination" do
       plan = Connection.connection_plan(@uri, {:http, "127.0.0.1", 9080})
 
-      # The socket gun opens points at the tunnel, not the exchange.
       assert plan.open_host == ~c"127.0.0.1"
       assert plan.open_port == 9080
       assert plan.open_opts.transport == :tcp
       assert plan.open_opts.protocols == [:http]
       refute Map.has_key?(plan.open_opts, :tls_opts)
-
-      # The CONNECT destination is the origin, with TLS terminating
-      # at the origin through the tunnel.
       assert plan.tunnel.host == ~c"stream.binance.com"
       assert plan.tunnel.port == 443
       assert plan.tunnel.transport == :tls
@@ -55,31 +52,58 @@ defmodule Oracle.Sources.Streams.ConnectionTest do
     end
   end
 
-  describe "receive-side watchdog" do
-    # The watchdog closes the gap between "data silent" (bounded by
-    # `receive_timeout_ms`) and "TCP declared dead" (minutes, via
-    # the OS retransmit timeout) — the zombie-socket class where an
-    # exchange edge honors Gun's protocol pings but stops forwarding
-    # stream data. The tests here drive the GenServer through
-    # synthetic state injection; Gun never actually connects (the
-    # adapter's URL points at a port no one listens on, so `:connect`
-    # resolves fast into `:disconnected` and backoff takes over).
-
+  describe "valid-trade watchdog" do
     defmodule DoomedAdapter do
       @moduledoc false
+      alias Oracle.Feeds.{Kline, Trade}
+
       def name, do: :doomed
-      # Loopback + unlikely port — gun resolves + fails fast.
       def ws_url(_), do: "ws://127.0.0.1:1/ws"
       def subscribe_messages(_), do: []
-      def parse_message(_), do: :ignore
       def ping_config, do: nil
+
+      def parse_message(%{"trade" => pair}) do
+        {:ok,
+         [
+           %Trade{
+             source: :doomed,
+             pair: String.to_existing_atom(pair),
+             trade_id: "trade-1",
+             price: Decimal.new("100"),
+             quantity: Decimal.new("1"),
+             side: :buy,
+             timestamp: DateTime.from_unix!(1_700_000_000, :second)
+           }
+         ]}
+      end
+
+      def parse_message(%{"kline" => pair}) do
+        {:ok,
+         [
+           %Kline{
+             source: :doomed,
+             pair: pair,
+             timeframe: :"1m",
+             open: Decimal.new("100"),
+             high: Decimal.new("100"),
+             low: Decimal.new("100"),
+             close: Decimal.new("100"),
+             timestamp: DateTime.from_unix!(1_700_000_000, :second)
+           }
+         ]}
+      end
+
+      def parse_message(_), do: :ignore
     end
 
     setup do
       {:ok, pid} =
         Connection.start_link(
           adapter: DoomedAdapter,
-          channels: [],
+          channels: [
+            %{feed: :trades, pair: :btc_usdt},
+            %{feed: :klines, pair: :btc_usdt}
+          ],
           target: self(),
           tag: :tick,
           receive_timeout_ms: nil
@@ -90,11 +114,7 @@ defmodule Oracle.Sources.Streams.ConnectionTest do
       {:ok, pid: pid}
     end
 
-    defp inject_ready_state(pid, timeout_ms) do
-      # Replace whatever state the (failing) `:connect` reached
-      # with a synthetic `:ready` state we can drive the handlers
-      # against. `gun_pid` is set to `self()` so the matching
-      # `{:gun_ws, gun_pid, ws_ref, _}` clause fires on our sends.
+    defp inject_ready_state(pid, timeout_ms, channels \\ nil) do
       ws_ref = make_ref()
       gun_pid = self()
 
@@ -104,83 +124,101 @@ defmodule Oracle.Sources.Streams.ConnectionTest do
           | gun_pid: gun_pid,
             ws_ref: ws_ref,
             conn_state: :ready,
+            channels: channels || state.channels,
             receive_timeout_ms: timeout_ms,
-            receive_timer: nil
+            trade_timers: %{}
         }
       end)
 
       {gun_pid, ws_ref}
     end
 
-    test "`receive_timeout_ms: nil` leaves the timer disarmed across frames", %{pid: pid} do
+    defp frame(pid, gun_pid, ws_ref, payload) do
+      send(pid, {:gun_ws, gun_pid, ws_ref, {:text, Jason.encode!(payload)}})
+      :sys.get_state(pid)
+    end
+
+    defp valid_trade(pid, gun_pid, ws_ref, pair \\ "btc_usdt") do
+      frame(pid, gun_pid, ws_ref, %{"trade" => pair})
+    end
+
+    test "nil timeout leaves trade timers disarmed", %{pid: pid} do
       {gun_pid, ws_ref} = inject_ready_state(pid, nil)
+      state = valid_trade(pid, gun_pid, ws_ref)
 
-      send(pid, {:gun_ws, gun_pid, ws_ref, {:text, "{}"}})
-      state = :sys.get_state(pid)
-
-      assert state.receive_timer == nil
+      assert state.trade_timers == %{}
       assert state.conn_state == :ready
     end
 
-    test "an inbound frame arms the timer and re-arms it on each subsequent frame", %{pid: pid} do
+    test "only a valid trade arms and re-arms its channel", %{pid: pid} do
       {gun_pid, ws_ref} = inject_ready_state(pid, 500)
 
-      send(pid, {:gun_ws, gun_pid, ws_ref, {:text, "{}"}})
-      first = :sys.get_state(pid).receive_timer
+      assert frame(pid, gun_pid, ws_ref, %{}).trade_timers == %{}
+      state = valid_trade(pid, gun_pid, ws_ref)
+
+      assert {{first, _token}, 1} =
+               {Map.fetch!(state.trade_timers, :btc_usdt), map_size(state.trade_timers)}
+
       assert is_reference(first)
 
-      send(pid, {:gun_ws, gun_pid, ws_ref, {:text, "{}"}})
-      second = :sys.get_state(pid).receive_timer
+      kline_state = frame(pid, gun_pid, ws_ref, %{"kline" => "btc_usdt"})
+      assert {^first, _token} = Map.fetch!(kline_state.trade_timers, :btc_usdt)
 
-      # Fresh reference each time — proof the cancel-and-re-arm
-      # path ran, not just a silent no-op.
+      malformed_state = frame(pid, gun_pid, ws_ref, %{"unexpected" => true})
+      assert {^first, _token} = Map.fetch!(malformed_state.trade_timers, :btc_usdt)
+
+      next_state = valid_trade(pid, gun_pid, ws_ref)
+      assert {second, _token} = Map.fetch!(next_state.trade_timers, :btc_usdt)
       assert is_reference(second)
       refute second == first
     end
 
-    test "silence past the timeout tears down + reconnects + logs the warning", %{pid: pid} do
+    test "each configured trade channel has an independent timer", %{pid: pid} do
+      channels = [%{feed: :trades, pair: :btc_usdt}, %{feed: :trades, pair: :eth_usdt}]
+      {gun_pid, ws_ref} = inject_ready_state(pid, 500, channels)
+
+      send(pid, {:gun_upgrade, gun_pid, ws_ref, ["websocket"], []})
+      initial = :sys.get_state(pid)
+      assert Map.keys(initial.trade_timers) |> Enum.sort() == [:btc_usdt, :eth_usdt]
+      {btc_first, _token} = Map.fetch!(initial.trade_timers, :btc_usdt)
+      {eth_first, _token} = Map.fetch!(initial.trade_timers, :eth_usdt)
+
+      next_state = valid_trade(pid, gun_pid, ws_ref)
+      {btc_second, _token} = Map.fetch!(next_state.trade_timers, :btc_usdt)
+      assert {^eth_first, _token} = Map.fetch!(next_state.trade_timers, :eth_usdt)
+      refute btc_second == btc_first
+    end
+
+    test "klines and malformed frames do not prevent trade-silence reconnect", %{pid: pid} do
       import ExUnit.CaptureLog
 
       {gun_pid, ws_ref} = inject_ready_state(pid, 50)
-
-      # Arm the timer by delivering one frame — matches the live
-      # path where `:gun_ws` is the arming event.
-      send(pid, {:gun_ws, gun_pid, ws_ref, {:text, "{}"}})
-      assert is_reference(:sys.get_state(pid).receive_timer)
+      valid_trade(pid, gun_pid, ws_ref)
 
       log =
         capture_log(fn ->
-          # Wait past the timeout; the fire path logs + schedules
-          # reconnect. `:sys.get_state` barrier ensures the
-          # `:receive_timeout` message has been processed.
+          frame(pid, gun_pid, ws_ref, %{"kline" => "btc_usdt"})
+          frame(pid, gun_pid, ws_ref, %{"unexpected" => true})
           Process.sleep(120)
           _ = :sys.get_state(pid)
         end)
 
       state = :sys.get_state(pid)
       assert state.conn_state == :disconnected
-      assert state.receive_timer == nil
-      # Backoff advanced from the min — proof schedule_reconnect ran.
+      assert state.trade_timers == %{}
       assert state.backoff_ms > 1_000
-
-      assert log =~ "receive timeout"
+      assert log =~ "trade timeout"
       assert log =~ "DoomedAdapter"
       assert log =~ "timeout_ms=50"
     end
 
-    test "teardown cancels the timer so no stale `:receive_timeout` survives", %{pid: pid} do
+    test "teardown cancels every trade timer", %{pid: pid} do
       {gun_pid, ws_ref} = inject_ready_state(pid, 500)
+      valid_trade(pid, gun_pid, ws_ref)
+      assert map_size(:sys.get_state(pid).trade_timers) == 1
 
-      send(pid, {:gun_ws, gun_pid, ws_ref, {:text, "{}"}})
-      assert is_reference(:sys.get_state(pid).receive_timer)
-
-      # `:gun_down` reuses the shared `teardown/1`. After it fires,
-      # the timer field is cleared via schedule_reconnect, and
-      # the live timer is canceled inside teardown.
       send(pid, {:gun_down, gun_pid, :http, :closed, []})
-      _ = :sys.get_state(pid)
-
-      assert :sys.get_state(pid).receive_timer == nil
+      assert :sys.get_state(pid).trade_timers == %{}
     end
   end
 end

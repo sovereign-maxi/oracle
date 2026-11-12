@@ -18,21 +18,19 @@ defmodule Oracle.Sources.Streams.Connection do
   PINGs) is scheduled here. WebSocket protocol PINGs are handled by
   Gun natively — we never see them.
 
-  ## Receive-side watchdog
+  ## Valid-trade watchdog
 
-  Opt-in via `:receive_timeout_ms` (nil default = disabled). When
-  enabled, every arrival of an inbound `:gun_ws` frame — ticker,
-  trade, binary, close — resets a timer; if the timer fires before
-  the next frame arrives, the connection is torn down and the
+  Opt-in via `:receive_timeout_ms` (nil default = disabled). Each
+  configured `:trades` channel has an independent timer. Only a
+  validated `%Oracle.Feeds.Trade{}` for that channel re-arms it;
+  malformed frames, vendor errors, tickers, and klines do not.
+  On valid-trade silence the connection is torn down and the
   standard reconnect path takes over.
 
   The gap this closes: an exchange edge node can accept the WS
   upgrade, honor Gun's protocol PINGs, and still stop forwarding
-  stream data under load. TCP + WS-protocol layers all look
-  healthy; the GenServer sits in `:ready` forever. The watchdog
-  closes the detection window between "data silent" (now bounded
-  by `receive_timeout_ms`) and "TCP declared dead" (minutes, via
-  OS retransmit timeouts).
+  trades under load. TCP + WS-protocol layers and chart-only klines
+  can all look healthy while the money-price channel is dead.
 
   Reconnect uses exponential backoff bounded to [1s, 60s]. On every
   successful upgrade the backoff resets to 1s.
@@ -70,8 +68,8 @@ defmodule Oracle.Sources.Streams.Connection do
     :ping_timer,
     :ping_message,
     :ping_interval_ms,
-    :receive_timer,
     :receive_timeout_ms,
+    trade_timers: %{},
     backoff_ms: @reconnect_min_ms,
     conn_state: :disconnected
   ]
@@ -270,7 +268,7 @@ defmodule Oracle.Sources.Streams.Connection do
     {:noreply,
      %{state | conn_state: :ready, backoff_ms: @reconnect_min_ms}
      |> schedule_ping()
-     |> schedule_receive_watchdog()}
+     |> schedule_trade_watchdogs()}
   end
 
   # WebSocket handshake rejected
@@ -297,16 +295,11 @@ defmodule Oracle.Sources.Streams.Connection do
     schedule_reconnect(state)
   end
 
-  # Frame from the exchange. Any inbound frame — ticker, trade,
-  # binary, close — is evidence-of-life; reset the receive
-  # watchdog before dispatching. Gun handles WS-protocol ping/pong
-  # internally and does not surface those as `:gun_ws`, so this
-  # path only ever sees data or close frames.
   def handle_info(
         {:gun_ws, gun_pid, ws_ref, frame},
         %{gun_pid: gun_pid, ws_ref: ws_ref} = state
       ) do
-    handle_frame(frame, schedule_receive_watchdog(state))
+    handle_frame(frame, state)
   end
 
   # Connection dropped (TCP/TLS closed, remote side)
@@ -354,23 +347,22 @@ defmodule Oracle.Sources.Streams.Connection do
   # Ping timer fired while disconnected — drop it
   def handle_info(:ping, state), do: {:noreply, state}
 
-  # Receive-watchdog fired: no inbound frame for `receive_timeout_ms`.
-  # Zombie-socket signature — TCP alive, protocol pings honored
-  # (that's Gun's job), stream data silent. Tear down and reconnect
-  # through the standard backoff path.
-  def handle_info(:receive_timeout, %{conn_state: :ready, receive_timeout_ms: ms} = state) do
-    Logger.warning(
-      "StreamConn: receive timeout — zombie socket, adapter=#{inspect(state.adapter)}, timeout_ms=#{ms}, action=reconnecting"
-    )
+  def handle_info({:trade_timeout, pair, token}, %{conn_state: :ready} = state) do
+    case Map.get(state.trade_timers, pair) do
+      {_timer, ^token} ->
+        Logger.warning(
+          "StreamConn: trade timeout, adapter=#{inspect(state.adapter)}, pair=#{inspect(pair)}, timeout_ms=#{state.receive_timeout_ms}, action=reconnecting"
+        )
 
-    teardown(state)
-    schedule_reconnect(%{state | receive_timer: nil})
+        teardown(state)
+        schedule_reconnect(%{state | trade_timers: %{}})
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
-  # Stale timer that fired while already disconnected / mid-upgrade —
-  # drop silently. The schedule_reconnect path has already taken
-  # the right action and the backoff is intact.
-  def handle_info(:receive_timeout, state), do: {:noreply, %{state | receive_timer: nil}}
+  def handle_info({:trade_timeout, _pair, _token}, state), do: {:noreply, state}
 
   # Late messages from a previous incarnation of the connection
   def handle_info(_other, state), do: {:noreply, state}
@@ -384,12 +376,13 @@ defmodule Oracle.Sources.Streams.Connection do
   # --- Frame handling ---
 
   defp handle_frame({:text, text}, state) do
-    case Jason.decode(text) do
-      {:ok, decoded} -> dispatch(state.adapter.parse_message(decoded), state)
-      _ -> :ok
-    end
+    next_state =
+      case Jason.decode(text) do
+        {:ok, decoded} -> dispatch(state.adapter.parse_message(decoded), state)
+        _ -> state
+      end
 
-    {:noreply, state}
+    {:noreply, next_state}
   end
 
   defp handle_frame({:binary, _bin}, state), do: {:noreply, state}
@@ -406,7 +399,10 @@ defmodule Oracle.Sources.Streams.Connection do
   end
 
   defp dispatch({:ok, structs}, state) when is_list(structs) do
-    Enum.each(structs, &send(state.target, {state.tag, state.adapter.name(), &1}))
+    Enum.reduce(structs, state, fn struct, acc ->
+      send(acc.target, {acc.tag, acc.adapter.name(), struct})
+      maybe_rearm_trade(acc, struct)
+    end)
   end
 
   # Adapter-reported errors (rejected subscribes, vendor error frames) must
@@ -416,9 +412,11 @@ defmodule Oracle.Sources.Streams.Connection do
     Logger.warning(
       "StreamConn: adapter error, adapter=#{inspect(state.adapter)}, reason=#{inspect(reason)}"
     )
+
+    state
   end
 
-  defp dispatch(_, _state), do: :ok
+  defp dispatch(_, state), do: state
 
   # --- Subscribes ---
 
@@ -438,9 +436,6 @@ defmodule Oracle.Sources.Streams.Connection do
     Process.send_after(self(), :connect, state.backoff_ms)
     next_backoff = min(state.backoff_ms * 2, @reconnect_max_ms)
 
-    # Timer refs were physically canceled in `teardown/1`; clear
-    # them from state too so a subsequent sanity read (or the
-    # next re-arm after reconnect) sees nil, not a stale ref.
     {:noreply,
      %{
        state
@@ -450,14 +445,14 @@ defmodule Oracle.Sources.Streams.Connection do
          ws_ref: nil,
          tunnel_ref: nil,
          ping_timer: nil,
-         receive_timer: nil,
+         trade_timers: %{},
          backoff_ms: next_backoff
      }}
   end
 
   defp teardown(state) do
     if state.ping_timer, do: Process.cancel_timer(state.ping_timer)
-    if state.receive_timer, do: Process.cancel_timer(state.receive_timer)
+    Enum.each(state.trade_timers, fn {_pair, {timer, _token}} -> Process.cancel_timer(timer) end)
     if state.gun_mref, do: Process.demonitor(state.gun_mref, [:flush])
     if state.gun_pid, do: :gun.close(state.gun_pid)
     :ok
@@ -479,39 +474,51 @@ defmodule Oracle.Sources.Streams.Connection do
     %{state | ping_timer: timer}
   end
 
-  # --- Receive watchdog (zombie-socket detection) ---
+  # --- Valid-trade watchdogs ---
 
-  # Nil timeout → feature off, no timer, no re-arm. Preserves
-  # legacy behavior for any caller that doesn't opt in.
-  defp schedule_receive_watchdog(%{receive_timeout_ms: nil} = state), do: state
+  defp schedule_trade_watchdogs(%{receive_timeout_ms: nil} = state), do: state
 
-  # Cancel-on-re-arm is load-bearing: without it, an old
-  # `:receive_timeout` message queued from a pre-frame arm would
-  # race into a fresh teardown even though frames just arrived.
-  # Mirror `schedule_ping/1`'s pattern — cancel, then arm —
-  # plus a mailbox flush when the timer already fired, so a
-  # stale message cannot survive the re-arm boundary.
-  defp schedule_receive_watchdog(%{receive_timeout_ms: ms, receive_timer: old} = state)
-       when is_integer(ms) do
-    if old do
-      case Process.cancel_timer(old) do
-        false ->
-          # Timer fired before cancel landed — the message is in
-          # the mailbox. Flush it so a healthy frame doesn't race
-          # a stale teardown.
-          receive do
-            :receive_timeout -> :ok
-          after
-            0 -> :ok
-          end
+  defp schedule_trade_watchdogs(state) do
+    state.channels
+    |> Enum.flat_map(fn
+      %{feed: :trades, pair: pair} -> [pair]
+      _ -> []
+    end)
+    |> Enum.uniq()
+    |> Enum.reduce(state, &schedule_trade_watchdog(&2, &1))
+  end
 
-        _ms_remaining ->
-          :ok
-      end
+  defp maybe_rearm_trade(
+         state,
+         %Oracle.Feeds.Trade{
+           source: source,
+           pair: pair,
+           trade_id: trade_id,
+           price: %Decimal{},
+           timestamp: %DateTime{}
+         }
+       )
+       when is_binary(trade_id) and trade_id != "" do
+    configured? = Enum.any?(state.channels, &(&1 == %{feed: :trades, pair: pair}))
+
+    if source == state.adapter.name() and configured? and not is_nil(state.receive_timeout_ms) do
+      schedule_trade_watchdog(state, pair)
+    else
+      state
+    end
+  end
+
+  defp maybe_rearm_trade(state, _struct), do: state
+
+  defp schedule_trade_watchdog(%{receive_timeout_ms: ms} = state, pair) when is_integer(ms) do
+    case Map.get(state.trade_timers, pair) do
+      {old_timer, _old_token} -> Process.cancel_timer(old_timer)
+      nil -> :ok
     end
 
-    timer = Process.send_after(self(), :receive_timeout, ms)
-    %{state | receive_timer: timer}
+    token = make_ref()
+    timer = Process.send_after(self(), {:trade_timeout, pair, token}, ms)
+    %{state | trade_timers: Map.put(state.trade_timers, pair, {timer, token})}
   end
 
   # --- Transport helpers ---

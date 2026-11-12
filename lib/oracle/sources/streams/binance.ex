@@ -48,14 +48,16 @@ defmodule Oracle.Sources.Streams.Binance do
   def unsubscribe_messages(_channels), do: []
 
   @impl true
-  def parse_message(%{"stream" => stream, "data" => data}) do
-    cond do
-      String.ends_with?(stream, "@miniTicker") -> parse_ticker(data)
-      String.ends_with?(stream, "@bookTicker") -> parse_book_ticker(data)
-      String.ends_with?(stream, "@trade") -> parse_trade(data)
-      String.ends_with?(stream, "@kline_1m") -> parse_kline(data)
-      String.ends_with?(stream, "@forceOrder") -> parse_liquidation(data)
-      true -> :ignore
+  def parse_message(%{"stream" => stream, "data" => data}) when is_binary(stream) do
+    with :ok <- validate_instrument(stream, data) do
+      cond do
+        String.ends_with?(stream, "@miniTicker") -> parse_ticker(data)
+        String.ends_with?(stream, "@bookTicker") -> parse_book_ticker(data)
+        String.ends_with?(stream, "@trade") -> parse_trade(data)
+        String.ends_with?(stream, "@kline_1m") -> parse_kline(data)
+        String.ends_with?(stream, "@forceOrder") -> parse_liquidation(data)
+        true -> :ignore
+      end
     end
   end
 
@@ -116,12 +118,14 @@ defmodule Oracle.Sources.Streams.Binance do
     with {:ok, price} <- safe_decimal(data["c"]),
          {:ok, high} <- safe_decimal(data["h"]),
          {:ok, low} <- safe_decimal(data["l"]),
-         {:ok, volume} <- safe_decimal(data["v"]) do
+         {:ok, volume} <- safe_decimal(data["v"]),
+         {:ok, timestamp} <- event_time(data["E"]) do
       {:ok,
        [
          %Ticker{
            source: :binance,
            pair: symbol_to_pair(data["s"]),
+           market_type: :spot,
            price: price,
            bid: nil,
            ask: nil,
@@ -129,7 +133,7 @@ defmodule Oracle.Sources.Streams.Binance do
            change_24h: nil,
            high_24h: high,
            low_24h: low,
-           timestamp: event_time(data["E"])
+           timestamp: timestamp
          }
        ]}
     else
@@ -137,10 +141,9 @@ defmodule Oracle.Sources.Streams.Binance do
     end
   end
 
-  # `@bookTicker` — best bid/ask top-of-book, fires on every change.
-  # No event timestamp in the payload (SPOT feed); wall-clock is the
-  # only signal we have. Price = mid (bid+ask)/2 so median aggregation
-  # across sources is comparing like-for-like.
+  # `@bookTicker` has no exchange event timestamp. Its timestamp is
+  # explicitly receipt time; trade and ticker source timestamps never
+  # fall back to receipt time.
   defp parse_book_ticker(%{"s" => sym} = data) do
     with {:ok, bid} <- safe_decimal(data["b"]),
          {:ok, ask} <- safe_decimal(data["a"]) do
@@ -151,6 +154,7 @@ defmodule Oracle.Sources.Streams.Binance do
          %Ticker{
            source: :binance,
            pair: symbol_to_pair(sym),
+           market_type: :spot,
            price: mid,
            bid: bid,
            ask: ask,
@@ -201,7 +205,9 @@ defmodule Oracle.Sources.Streams.Binance do
 
   defp parse_trade(data) do
     with {:ok, price} <- safe_decimal(data["p"]),
-         {:ok, qty} <- safe_decimal(data["q"]) do
+         {:ok, qty} <- safe_decimal(data["q"]),
+         {:ok, timestamp} <- event_time(data["T"]),
+         trade_id when is_binary(trade_id) and trade_id != "" <- trade_id(data["t"]) do
       side = if data["m"], do: :sell, else: :buy
 
       {:ok,
@@ -209,11 +215,12 @@ defmodule Oracle.Sources.Streams.Binance do
          %Trade{
            source: :binance,
            pair: symbol_to_pair(data["s"]),
-           trade_id: to_string(data["t"]),
+           market_type: :spot,
+           trade_id: trade_id,
            price: price,
            quantity: qty,
            side: side,
-           timestamp: event_time(data["T"])
+           timestamp: timestamp
          }
        ]}
     else
@@ -225,7 +232,8 @@ defmodule Oracle.Sources.Streams.Binance do
     # `ap` is the average fill price; the order price `p` can be "0" on
     # market-style liquidation orders and must never be emitted.
     with {:ok, price} <- positive_decimal(order["ap"]),
-         {:ok, qty} <- safe_decimal(order["q"]) do
+         {:ok, qty} <- safe_decimal(order["q"]),
+         {:ok, timestamp} <- event_time(order["T"]) do
       side = if order["S"] == "BUY", do: :buy, else: :sell
 
       {:ok,
@@ -236,7 +244,7 @@ defmodule Oracle.Sources.Streams.Binance do
            side: side,
            price: price,
            quantity: qty,
-           timestamp: event_time(order["T"])
+           timestamp: timestamp
          }
        ]}
     else
@@ -245,6 +253,24 @@ defmodule Oracle.Sources.Streams.Binance do
   end
 
   defp parse_liquidation(_), do: :ignore
+
+  defp validate_instrument(stream, data) when is_map(data) do
+    expected = stream |> String.split("@", parts: 2) |> hd() |> String.upcase()
+    actual = data["s"] || get_in(data, ["o", "s"])
+    kline_symbol = get_in(data, ["k", "s"])
+
+    cond do
+      actual != expected -> {:error, :instrument_mismatch}
+      is_map(data["k"]) and kline_symbol != expected -> {:error, :instrument_mismatch}
+      true -> :ok
+    end
+  end
+
+  defp validate_instrument(_stream, _data), do: {:error, :instrument_mismatch}
+
+  defp trade_id(value) when is_integer(value) and value >= 0, do: Integer.to_string(value)
+  defp trade_id(value) when is_binary(value) and value != "", do: value
+  defp trade_id(_value), do: nil
 
   defp pair_to_symbol(pair) do
     pair |> Atom.to_string() |> String.downcase() |> String.replace("_", "")
@@ -267,14 +293,8 @@ defmodule Oracle.Sources.Streams.Binance do
 
   defp symbol_to_pair(_), do: :unknown
 
-  defp event_time(ms) when is_integer(ms) do
-    case DateTime.from_unix(ms, :millisecond) do
-      {:ok, dt} -> dt
-      _ -> DateTime.utc_now()
-    end
-  end
-
-  defp event_time(_), do: DateTime.utc_now()
+  defp event_time(ms) when is_integer(ms) and ms >= 0, do: DateTime.from_unix(ms, :millisecond)
+  defp event_time(_), do: {:error, :invalid_timestamp}
 
   defp safe_decimal(nil), do: {:error, :nil_value}
   defp safe_decimal(""), do: {:error, :empty_string}

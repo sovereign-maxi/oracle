@@ -42,28 +42,32 @@ defmodule Oracle.Sources.Streams.Okx do
   end
 
   @impl true
-  def parse_message(%{"arg" => %{"channel" => channel}, "action" => action, "data" => data})
+  def parse_message(%{"arg" => %{"channel" => channel} = arg, "action" => action, "data" => data})
       when is_list(data) do
-    cond do
-      channel == "tickers" -> parse_tickers(data)
-      channel == "trades" -> parse_trades(data)
-      channel == "books5" and action == "snapshot" -> parse_book_snapshot(data)
-      channel == "books5" -> parse_book_delta(data)
-      channel == "liquidation-orders" -> parse_liquidations(data)
-      channel == "funding-rate" -> parse_funding_rates(data)
-      true -> :ignore
+    with :ok <- validate_instruments(arg, data) do
+      cond do
+        channel == "tickers" -> parse_tickers(data)
+        channel == "trades" -> parse_trades(data)
+        channel == "books5" and action == "snapshot" -> parse_book_snapshot(data)
+        channel == "books5" -> parse_book_delta(data)
+        channel == "liquidation-orders" -> parse_liquidations(data)
+        channel == "funding-rate" -> parse_funding_rates(data)
+        true -> :ignore
+      end
     end
   end
 
-  def parse_message(%{"arg" => %{"channel" => channel}, "data" => data})
+  def parse_message(%{"arg" => %{"channel" => channel} = arg, "data" => data})
       when is_list(data) do
-    cond do
-      channel == "tickers" -> parse_tickers(data)
-      channel == "trades" -> parse_trades(data)
-      channel == "books5" -> parse_book_snapshot(data)
-      channel == "liquidation-orders" -> parse_liquidations(data)
-      channel == "funding-rate" -> parse_funding_rates(data)
-      true -> :ignore
+    with :ok <- validate_instruments(arg, data) do
+      cond do
+        channel == "tickers" -> parse_tickers(data)
+        channel == "trades" -> parse_trades(data)
+        channel == "books5" -> parse_book_snapshot(data)
+        channel == "liquidation-orders" -> parse_liquidations(data)
+        channel == "funding-rate" -> parse_funding_rates(data)
+        true -> :ignore
+      end
     end
   end
 
@@ -109,26 +113,25 @@ defmodule Oracle.Sources.Streams.Okx do
   defp parse_tickers(data) do
     tickers =
       Enum.flat_map(data, fn item ->
-        case positive_decimal(item["last"]) do
-          {:ok, price} ->
-            [
-              %Ticker{
-                source: :okx,
-                pair: inst_to_pair(item["instId"]),
-                price: price,
-                bid: parse_decimal(item["bidPx"]),
-                ask: parse_decimal(item["askPx"]),
-                volume_24h: parse_decimal(item["vol24h"]),
-                change_24h: nil,
-                high_24h: parse_decimal(item["high24h"]),
-                low_24h: parse_decimal(item["low24h"]),
-                timestamp: event_time(item["ts"])
-              }
-            ]
-
-          {:error, _} ->
-            # No usable price — never emit a partial ticker.
-            []
+        with {:ok, price} <- positive_decimal(item["last"]),
+             {:ok, timestamp} <- event_time(item["ts"]) do
+          [
+            %Ticker{
+              source: :okx,
+              pair: inst_to_pair(item["instId"]),
+              market_type: market_type(item["instId"]),
+              price: price,
+              bid: parse_decimal(item["bidPx"]),
+              ask: parse_decimal(item["askPx"]),
+              volume_24h: parse_decimal(item["vol24h"]),
+              change_24h: nil,
+              high_24h: parse_decimal(item["high24h"]),
+              low_24h: parse_decimal(item["low24h"]),
+              timestamp: timestamp
+            }
+          ]
+        else
+          _ -> []
         end
       end)
 
@@ -142,18 +145,20 @@ defmodule Oracle.Sources.Streams.Okx do
 
   defp build_trade(item) do
     with {:ok, price} <- safe_decimal(item["px"]),
-         {:ok, qty} <- safe_decimal(item["sz"]) do
-      side = if item["side"] == "buy", do: :buy, else: :sell
-
+         {:ok, qty} <- safe_decimal(item["sz"]),
+         {:ok, timestamp} <- event_time(item["ts"]),
+         trade_id when is_binary(trade_id) and trade_id != "" <- item["tradeId"],
+         side when side in [:buy, :sell] <- parse_side(item["side"]) do
       [
         %Trade{
           source: :okx,
           pair: inst_to_pair(item["instId"]),
-          trade_id: item["tradeId"],
+          market_type: market_type(item["instId"]),
+          trade_id: trade_id,
           price: price,
           quantity: qty,
           side: side,
-          timestamp: event_time(item["ts"])
+          timestamp: timestamp
         }
       ]
     else
@@ -164,19 +169,22 @@ defmodule Oracle.Sources.Streams.Okx do
   defp parse_book_snapshot(data) do
     snapshots =
       Enum.flat_map(data, fn item ->
-        bids = parse_levels(item["bids"])
-        asks = parse_levels(item["asks"])
+        case event_time(item["ts"]) do
+          {:ok, timestamp} ->
+            [
+              %BookSnapshot{
+                source: :okx,
+                pair: inst_to_pair(item["instId"]),
+                bids: parse_levels(item["bids"]),
+                asks: parse_levels(item["asks"]),
+                sequence: parse_int(item["seqId"]),
+                timestamp: timestamp
+              }
+            ]
 
-        [
-          %BookSnapshot{
-            source: :okx,
-            pair: inst_to_pair(item["instId"]),
-            bids: bids,
-            asks: asks,
-            sequence: parse_int(item["seqId"]),
-            timestamp: event_time(item["ts"])
-          }
-        ]
+          _ ->
+            []
+        end
       end)
 
     {:ok, snapshots}
@@ -185,20 +193,23 @@ defmodule Oracle.Sources.Streams.Okx do
   defp parse_book_delta(data) do
     deltas =
       Enum.flat_map(data, fn item ->
-        bids = parse_levels(item["bids"])
-        asks = parse_levels(item["asks"])
+        case event_time(item["ts"]) do
+          {:ok, timestamp} ->
+            [
+              %BookDelta{
+                source: :okx,
+                pair: inst_to_pair(item["instId"]),
+                bids: parse_levels(item["bids"]),
+                asks: parse_levels(item["asks"]),
+                first_sequence: parse_int(item["prevSeqId"]),
+                last_sequence: parse_int(item["seqId"]),
+                timestamp: timestamp
+              }
+            ]
 
-        [
-          %BookDelta{
-            source: :okx,
-            pair: inst_to_pair(item["instId"]),
-            bids: bids,
-            asks: asks,
-            first_sequence: parse_int(item["prevSeqId"]),
-            last_sequence: parse_int(item["seqId"]),
-            timestamp: event_time(item["ts"])
-          }
-        ]
+          _ ->
+            []
+        end
       end)
 
     {:ok, deltas}
@@ -217,9 +228,9 @@ defmodule Oracle.Sources.Streams.Okx do
 
   defp build_liquidation(detail, pair) do
     with {:ok, price} <- safe_decimal(detail["bkPx"]),
-         {:ok, qty} <- safe_decimal(detail["sz"]) do
-      side = if detail["side"] == "buy", do: :buy, else: :sell
-
+         {:ok, qty} <- safe_decimal(detail["sz"]),
+         {:ok, timestamp} <- event_time(detail["ts"]),
+         side when side in [:buy, :sell] <- parse_side(detail["side"]) do
       [
         %Liquidation{
           source: :okx,
@@ -227,7 +238,7 @@ defmodule Oracle.Sources.Streams.Okx do
           side: side,
           price: price,
           quantity: qty,
-          timestamp: event_time(detail["ts"])
+          timestamp: timestamp
         }
       ]
     else
@@ -238,15 +249,20 @@ defmodule Oracle.Sources.Streams.Okx do
   defp parse_funding_rates(data) do
     rates =
       Enum.flat_map(data, fn item ->
-        [
-          %FundingRate{
-            source: :okx,
-            pair: inst_to_pair(item["instId"]),
-            rate: parse_decimal(item["fundingRate"]),
-            next_funding_time: event_time(item["nextFundingTime"]),
-            timestamp: event_time(item["ts"])
-          }
-        ]
+        with {:ok, timestamp} <- event_time(item["ts"]),
+             {:ok, next_funding_time} <- event_time(item["nextFundingTime"]) do
+          [
+            %FundingRate{
+              source: :okx,
+              pair: inst_to_pair(item["instId"]),
+              rate: parse_decimal(item["fundingRate"]),
+              next_funding_time: next_funding_time,
+              timestamp: timestamp
+            }
+          ]
+        else
+          _ -> []
+        end
       end)
 
     {:ok, rates}
@@ -269,7 +285,7 @@ defmodule Oracle.Sources.Streams.Okx do
 
   defp parse_levels(_), do: []
 
-  defp pair_to_inst(:btc_usdt), do: "BTC-USDT-SWAP"
+  defp pair_to_inst(:btc_usdt), do: "BTC-USDT"
   defp pair_to_inst(:eth_usdt), do: "ETH-USDT-SWAP"
   defp pair_to_inst(:btc_usd), do: "BTC-USD-SWAP"
 
@@ -297,6 +313,26 @@ defmodule Oracle.Sources.Streams.Okx do
 
   defp inst_to_pair(_), do: :unknown
 
+  defp market_type(inst_id) when is_binary(inst_id) do
+    if String.ends_with?(inst_id, "-SWAP"), do: :swap, else: :spot
+  end
+
+  defp market_type(_inst_id), do: nil
+
+  defp parse_side("buy"), do: :buy
+  defp parse_side("sell"), do: :sell
+  defp parse_side(_side), do: nil
+
+  defp validate_instruments(%{"instId" => expected}, data) when is_binary(expected) do
+    if Enum.all?(data, &(is_map(&1) and &1["instId"] == expected)) do
+      :ok
+    else
+      {:error, :instrument_mismatch}
+    end
+  end
+
+  defp validate_instruments(_arg, _data), do: {:error, :instrument_mismatch}
+
   defp parse_decimal(nil), do: nil
 
   defp parse_decimal(value) when is_binary(value) do
@@ -321,21 +357,16 @@ defmodule Oracle.Sources.Streams.Okx do
   defp parse_int(value) when is_integer(value), do: value
   defp parse_int(_), do: nil
 
-  defp event_time(ms) when is_integer(ms) do
-    case DateTime.from_unix(ms, :millisecond) do
-      {:ok, dt} -> dt
-      _ -> DateTime.utc_now()
-    end
-  end
+  defp event_time(ms) when is_integer(ms) and ms >= 0, do: DateTime.from_unix(ms, :millisecond)
 
   defp event_time(ms) when is_binary(ms) do
     case Integer.parse(ms) do
       {int, ""} -> event_time(int)
-      _ -> DateTime.utc_now()
+      _ -> {:error, :invalid_timestamp}
     end
   end
 
-  defp event_time(_), do: DateTime.utc_now()
+  defp event_time(_), do: {:error, :invalid_timestamp}
 
   defp safe_decimal(nil), do: {:error, :nil_value}
   defp safe_decimal(""), do: {:error, :empty_string}
