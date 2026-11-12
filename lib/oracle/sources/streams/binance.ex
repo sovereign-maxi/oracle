@@ -174,6 +174,7 @@ defmodule Oracle.Sources.Streams.Binance do
          {:ok, high} <- positive_decimal(data["h"]),
          {:ok, low} <- positive_decimal(data["l"]),
          {:ok, close} <- positive_decimal(data["c"]),
+         {:ok, volume} <- safe_decimal(data["v"]),
          {:ok, timestamp} <- DateTime.from_unix(opened_ms, :millisecond),
          true <- rem(opened_ms, 60_000) == 0 do
       {:ok,
@@ -186,6 +187,7 @@ defmodule Oracle.Sources.Streams.Binance do
            high: high,
            low: low,
            close: close,
+           volume: volume,
            timestamp: timestamp,
            closed?: closed?
          }

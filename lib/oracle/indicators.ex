@@ -8,8 +8,10 @@ defmodule Oracle.Indicators do
   - **EMA** - Exponential Moving Average
   - **MACD** - Moving Average Convergence Divergence
   - **Bollinger Bands** - Volatility bands around SMA
+  - **RSI** - Relative Strength Index with Wilder smoothing
 
-  All functions operate on lists of numeric values (typically closing prices).
+  Indicator functions operate on lists of numeric values. `align/2`
+  attaches those values to the trailing candles that produced them.
   """
 
   alias Oracle.Events.{IndicatorsRequested, IndicatorsUpdated}
@@ -213,5 +215,65 @@ defmodule Oracle.Indicators do
     mean = Enum.sum(values) / length(values)
     variance = Enum.sum(Enum.map(values, fn v -> (v - mean) ** 2 end)) / length(values)
     :math.sqrt(variance)
+  end
+
+  # ─────────────────────────────────────────────────────────────
+  # RSI - Relative Strength Index
+  # ─────────────────────────────────────────────────────────────
+
+  @doc """
+  Calculates the Relative Strength Index using Wilder smoothing.
+
+  The first value appears after `period` price changes, so an input of
+  `n` prices produces `n - period` values. A flat window returns 50,
+  a gain-only window returns 100, and a loss-only window returns 0.
+  """
+  @spec rsi([number()], pos_integer()) :: [float()]
+  def rsi(values, period \\ 14)
+
+  def rsi(values, period) when is_list(values) and is_integer(period) and period > 0 do
+    if length(values) <= period do
+      []
+    else
+      deltas = values |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end)
+      {initial, rest} = Enum.split(deltas, period)
+      gain = initial |> Enum.map(&max(&1, 0)) |> Enum.sum() |> Kernel./(period)
+      loss = initial |> Enum.map(&max(-&1, 0)) |> Enum.sum() |> Kernel./(period)
+
+      {_gain, _loss, values} =
+        Enum.reduce(rest, {gain, loss, [rsi_value(gain, loss)]}, fn delta, {g, l, acc} ->
+          next_gain = (g * (period - 1) + max(delta, 0)) / period
+          next_loss = (l * (period - 1) + max(-delta, 0)) / period
+          {next_gain, next_loss, [rsi_value(next_gain, next_loss) | acc]}
+        end)
+
+      Enum.reverse(values)
+    end
+  end
+
+  defp rsi_value(gain, loss) do
+    cond do
+      gain == 0 and loss == 0 -> 50.0
+      loss == 0 -> 100.0
+      gain == 0 -> 0.0
+      true -> 100.0 - 100.0 / (1.0 + gain / loss)
+    end
+  end
+
+  @doc """
+  Aligns an indicator list to the trailing candles that produced it.
+
+  Warm-up values are omitted by construction. Raises when the values
+  cannot have come from the supplied candle series.
+  """
+  @spec align([%{time: integer()}], [number()]) :: [%{time: integer(), value: number()}]
+  def align(candles, values) when is_list(candles) and is_list(values) do
+    if length(values) > length(candles),
+      do: raise(ArgumentError, "indicator series exceeds candles")
+
+    candles
+    |> Enum.drop(length(candles) - length(values))
+    |> Enum.zip(values)
+    |> Enum.map(fn {%{time: time}, value} -> %{time: time, value: value} end)
   end
 end

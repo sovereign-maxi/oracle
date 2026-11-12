@@ -212,6 +212,53 @@ defmodule Oracle.IndicatorsTest do
     end
   end
 
+  describe "rsi/2" do
+    test "matches the standard Wilder example" do
+      values = [
+        44.34,
+        44.09,
+        44.15,
+        43.61,
+        44.33,
+        44.83,
+        45.10,
+        45.42,
+        45.84,
+        46.08,
+        45.89,
+        46.03,
+        45.61,
+        46.28,
+        46.28
+      ]
+
+      assert [rsi] = Indicators.rsi(values)
+      assert_in_delta rsi, 70.46, 0.01
+    end
+
+    test "handles short, flat, gain-only, and loss-only series" do
+      assert Indicators.rsi([1, 2, 3], 3) == []
+      assert Indicators.rsi(List.duplicate(100, 20)) == List.duplicate(50.0, 6)
+      assert Indicators.rsi(Enum.to_list(1..20)) == List.duplicate(100.0, 6)
+      assert Indicators.rsi(Enum.to_list(20..1//-1)) == List.duplicate(0.0, 6)
+    end
+  end
+
+  describe "align/2" do
+    test "attaches values to the trailing candles that produced them" do
+      candles = Enum.map(1..5, &%{time: &1})
+
+      assert Indicators.align(candles, [10.0, 20.0]) == [
+               %{time: 4, value: 10.0},
+               %{time: 5, value: 20.0}
+             ]
+    end
+
+    test "rejects values that cannot belong to the candles" do
+      assert_raise ArgumentError, fn -> Indicators.align([%{time: 1}], [1.0, 2.0]) end
+    end
+  end
+
   describe "edge cases" do
     test "handles single value gracefully" do
       assert Indicators.sma([100], 1) == [100.0]

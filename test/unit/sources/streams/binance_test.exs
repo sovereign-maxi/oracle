@@ -171,6 +171,7 @@ defmodule Oracle.Sources.Streams.BinanceTest do
       assert Decimal.equal?(kline.high, Decimal.new("100010.02"))
       assert Decimal.equal?(kline.low, Decimal.new("99990.03"))
       assert Decimal.equal?(kline.close, Decimal.new("100005.04"))
+      assert Decimal.equal?(kline.volume, Decimal.new("12.34"))
       assert kline.timestamp == DateTime.from_unix!(1_704_067_200_000, :millisecond)
       assert kline.closed?
     end
@@ -220,6 +221,7 @@ defmodule Oracle.Sources.Streams.BinanceTest do
           "h" => "100010.02",
           "l" => "99990.03",
           "c" => "100005.04",
+          "v" => "12.34",
           "x" => true
         }
       }

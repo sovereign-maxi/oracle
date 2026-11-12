@@ -48,7 +48,7 @@ end
 |--------|---------|
 | `Oracle.Aggregator` | Price aggregation (median, mean, VWAP) |
 | `Oracle.Derived` | Composite price calculation (BTC/XAU, etc.) |
-| `Oracle.Indicators` | Technical indicators (SMA, EMA, MACD, Bollinger) |
+| `Oracle.Indicators` | Technical indicators (SMA, EMA, MACD, Bollinger, RSI) and timestamp alignment |
 | `Oracle.Candles` | OHLC candle building from ticks |
 | `Oracle.Book` | Pure order book management functions |
 | `Oracle.Connection` | Stateless WebSocket connection utilities (backoff, health) |
@@ -177,6 +177,8 @@ sma_values = Indicators.sma(closes, 5)
 ema_values = Indicators.ema(closes, 5)
 %{macd: macd, signal: signal, histogram: hist} = Indicators.macd(closes)
 %{upper: upper, middle: middle, lower: lower} = Indicators.bollinger(closes, 20, 2)
+rsi_values = Indicators.rsi(closes, 14)
+aligned_points = Indicators.align(candle_data, rsi_values)
 ```
 
 ### OHLC Candles

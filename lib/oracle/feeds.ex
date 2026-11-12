@@ -109,7 +109,8 @@ defmodule Oracle.Feeds do
     Exchange-built OHLC candle from a streaming kline feed.
 
     `timestamp` is the exchange's bucket-open time, not receipt time.
-    Both forming and closed candles use the same representation.
+    `volume` is optional base-asset volume for display indicators such
+    as VWAP. Both forming and closed candles use the same representation.
     """
     @type t :: %__MODULE__{
             source: atom(),
@@ -119,6 +120,7 @@ defmodule Oracle.Feeds do
             high: Decimal.t(),
             low: Decimal.t(),
             close: Decimal.t(),
+            volume: Decimal.t() | nil,
             timestamp: DateTime.t(),
             closed?: boolean(),
             version: pos_integer()
@@ -132,6 +134,7 @@ defmodule Oracle.Feeds do
       :high,
       :low,
       :close,
+      :volume,
       :timestamp,
       :closed?,
       version: 1
